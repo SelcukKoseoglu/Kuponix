@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { MatchSelection } from '../../types';
 import { Autocomplete, type AutocompleteOption } from '../../components/Autocomplete';
-import { MARKETS, QUICK_MARKETS } from '../../data/markets';
+import { MARKETS, QUICK_MARKETS, quickPick } from '../../data/markets';
 import { TEAMS } from '../../data/teams';
 import { normalizeSearch, searchItems } from '../../lib/search';
 import { EMPTY_DRAFT, splitMatchName, validateDraft, type DraftErrors, type SelectionDraft } from '../../lib/validation';
@@ -36,6 +36,7 @@ const toOption = (item: { value: string; hint?: string }): AutocompleteOption =>
 export function SelectionForm({ editing, knownTeams, onSubmit, onCancelEdit }: Props) {
   const [draft, setDraft] = useState<SelectionDraft>(EMPTY_DRAFT);
   const [errors, setErrors] = useState<DraftErrors>({});
+  const [combine, setCombine] = useState(false);
   const firstInput = useRef<HTMLInputElement>(null);
   const marketInput = useRef<HTMLInputElement>(null);
 
@@ -146,21 +147,34 @@ export function SelectionForm({ editing, knownTeams, onSubmit, onCancelEdit }: P
           invalid={!!errors.marketSelection}
         />
       </Field>
-      <div className="-mt-2 flex flex-wrap gap-1.5" aria-label="Hızlı bahis seçimleri">
-        {QUICK_MARKETS.map((m) => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => set('marketSelection')(m)}
-            className={`rounded-md border px-2 py-1 text-xs font-medium transition ${
-              draft.marketSelection === m
-                ? 'border-sky-400 bg-sky-500/20 text-sky-100'
-                : 'border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500'
-            }`}
-          >
-            {m}
-          </button>
+      <div className="-mt-2 space-y-1.5" aria-label="Hızlı bahis seçimleri">
+        {QUICK_MARKETS.map((group) => (
+          <div key={group.label} className="flex flex-wrap items-center gap-1.5">
+            <span className="w-14 shrink-0 text-[11px] uppercase tracking-wide text-slate-500">{group.label}</span>
+            {group.values.map((m) => {
+              const selected = draft.marketSelection.split(' & ').includes(m);
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => set('marketSelection')(quickPick(draft.marketSelection, m, combine))}
+                  className={`rounded-md border px-2 py-1 text-xs font-medium transition ${
+                    selected
+                      ? 'border-sky-400 bg-sky-500/20 text-sky-100'
+                      : 'border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500'
+                  }`}
+                >
+                  {m}
+                </button>
+              );
+            })}
+          </div>
         ))}
+        <label className="flex w-fit cursor-pointer items-center gap-2 text-xs text-slate-300">
+          <input type="checkbox" className="accent-sky-500" checked={combine} onChange={(e) => setCombine(e.target.checked)} />
+          Birleştir (&amp;): tıkladıklarını tek seçimde birleştir, ör. MS 1 &amp; 4.5 Alt
+        </label>
       </div>
 
       <div className="grid grid-cols-3 gap-3">

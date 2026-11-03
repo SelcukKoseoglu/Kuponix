@@ -82,7 +82,7 @@ export function Recommendation({ result, runId, stale, saved, selections, onUpda
             ))}
           </div>
 
-          <MatchRiskTable plan={plan} selections={selections} limits={result.riskLimits} />
+          <MatchRiskTable plan={plan} selections={selections} />
 
           {result.comparisons.length > 0 && <ComparisonTable recommended={stats} comparisons={result.comparisons} />}
 
@@ -116,22 +116,14 @@ function StatsGrid({ stats, remainingKurus }: { stats: PlanStats; remainingKurus
   );
 }
 
-function MatchRiskTable({
-  plan,
-  selections,
-  limits,
-}: {
-  plan: Plan;
-  selections: MatchSelection[];
-  limits: OptimizationResult['riskLimits'];
-}) {
+function MatchRiskTable({ plan, selections }: { plan: Plan; selections: MatchSelection[] }) {
   const rows = useMemo(() => matchExposures(plan, selections), [plan, selections]);
   return (
     <div>
       <h3 className="text-sm font-semibold text-slate-200">Maç bazında risk</h3>
       <p className="mt-0.5 text-xs text-slate-400">
-        Tek bir maç yatarsa ne olur? Sınır: bir maç en fazla {limits.maxCouponsPerMatch} kupona girer ve bütçenin en fazla %
-        {Math.round(limits.maxExposure * 100)}’ini etkiler{limits.relaxed ? ' (seçim azlığı nedeniyle gevşetildi)' : ''}.
+        Tek bir maç yatarsa ne olur? Her maçın kaç kupona girdiği, yatarsa bütçenin ne kadarının yandığı ve yalnız o maç
+        yatarsa elinde kalan dönüş.
       </p>
       <div className="mt-2 divide-y divide-slate-800 rounded-lg border border-slate-800 text-xs sm:text-sm">
         <div className="grid grid-cols-[1.6fr_0.6fr_0.8fr_1fr] gap-2 px-3 py-1.5 text-slate-400">

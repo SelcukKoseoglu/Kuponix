@@ -1,11 +1,17 @@
 import type { ExcludedColumn, LossScenario, MatchSelection, NormalCoupon, SystemColumn, SystemCoupon } from '../types';
 import { combinations, systemColumnCount } from './combinatorics';
 import { MIN_STAKE_KURUS, formatTL } from './money';
+import { prepareShape, winningColumnCount, winningSums, type PreparedShape } from './payout';
 import { describeSelection } from './validation';
 
 export const MIN_SYSTEM_SELECTIONS = 3;
-/** Sistem kuponunda en fazla bu kadar seçim (Sistem 2..8 = 247 kolon). */
-export const MAX_SYSTEM_SELECTIONS = 8;
+/**
+ * Bir sistem kuponunda en fazla seçim: aynı anda değerlendirilen maç sayısı kadar (öneri havuzu 16 maç).
+ * Bu bir kupon kuralı değil, tarayıcıda hesaplama süresini makul tutan teknik üst sınırdır.
+ */
+export const MAX_SYSTEM_SELECTIONS = 16;
+/** Kolon × sonuç sayısı bunu aşarsa senaryolar kolon kolon değil, kazananların oranlarından hesaplanır. */
+const EXACT_SCENARIO_WORK = 4_000_000;
 /** Kolon başına en düşük tutar: 1 kuruş. Platform kuralları ayrıca kontrol edilmelidir. */
 export const MIN_COLUMN_STAKE_KURUS = 1;
 
@@ -139,14 +145,20 @@ export function calculateSystemCoupon(
       perColumnKurus,
       stakeKurus,
       unallocatedKurus: allocatedKurus - stakeKurus,
-      scenarios: lossScenarios(n, validMasks, columns.map((c) => c.returnKurus)),
+      scenarios:
+        columns.length * 2 ** n <= EXACT_SCENARIO_WORK
+          ? lossScenarios(n, validMasks, columns.map((c) => c.returnKurus))
+          : lossScenariosFromShape(
+              prepareShape({ odds: selections.map((s) => s.odds), minMatches: selections.map((s) => s.minMatches), minSize }),
+              perColumnKurus,
+            ),
     },
   };
 }
 
 /**
  * Kaybeden seçim sayısına göre senaryo aralıkları: hangi seçimlerin kaybettiğine bağlı olarak
- * en düşük ve en yüksek teorik dönüş. Tüm 2^n sonuç taranır (n ≤ 8).
+ * en düşük ve en yüksek teorik dönüş. Tüm 2^n sonuç taranır; kolonlar tek tek toplanır (kuruşu kuruşuna).
  */
 export function lossScenarios(n: number, columnMasks: readonly number[], columnReturns: readonly number[]): LossScenario[] {
   const scenarios: LossScenario[] = Array.from({ length: n + 1 }, (_, losers) => ({
@@ -165,6 +177,38 @@ export function lossScenarios(n: number, columnMasks: readonly number[], columnR
         winning++;
       }
     });
+    const sc = scenarios[popcount(lostMask)];
+    sc.minReturnKurus = Math.min(sc.minReturnKurus, total);
+    sc.maxReturnKurus = Math.max(sc.maxReturnKurus, total);
+    sc.minWinningColumns = Math.min(sc.minWinningColumns, winning);
+    sc.maxWinningColumns = Math.max(sc.maxWinningColumns, winning);
+  }
+  return scenarios;
+}
+
+/**
+ * lossScenarios'un çok kolonlu sistemler için hali: her sonuçta kazanan kolonların toplamı kolonlar dolaşılmadan,
+ * kazananların oranlarından bulunur. Toplam kuruşa yuvarlanır (kolon kolon yuvarlamadan birkaç kuruş sapabilir).
+ */
+export function lossScenariosFromShape(shape: PreparedShape, perColumnKurus: number): LossScenario[] {
+  const n = shape.n;
+  const scenarios: LossScenario[] = Array.from({ length: n + 1 }, (_, losers) => ({
+    losers,
+    minReturnKurus: Number.POSITIVE_INFINITY,
+    maxReturnKurus: 0,
+    minWinningColumns: Number.POSITIVE_INFINITY,
+    maxWinningColumns: 0,
+  }));
+  const out = new Float64Array(n + 1);
+  const scratch = new Float64Array(n + 1);
+  const all = n >= 31 ? -1 : (1 << n) - 1;
+  for (let lostMask = 0; lostMask < 2 ** n; lostMask++) {
+    const winners = all & ~lostMask;
+    winningSums(shape, winners, out, scratch);
+    let sum = 0;
+    for (let j = shape.minSize; j <= n; j++) sum += out[j];
+    const total = Math.round(sum * perColumnKurus);
+    const winning = winningColumnCount(shape, winners);
     const sc = scenarios[popcount(lostMask)];
     sc.minReturnKurus = Math.min(sc.minReturnKurus, total);
     sc.maxReturnKurus = Math.max(sc.maxReturnKurus, total);

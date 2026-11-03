@@ -126,8 +126,6 @@ export type OptimizationResult = {
   stats: PlanStats | null;
   comparisons: Comparison[];
   riskProfile: RiskProfile;
-  /** Öneride uygulanan yoğunlaşma sınırları (seçim azsa gevşetilmiş olabilir). */
-  riskLimits: { maxExposure: number; maxCouponsPerMatch: number; relaxed: boolean };
   notes: string[];
   budgetKurus: number;
   validSelectionCount: number;

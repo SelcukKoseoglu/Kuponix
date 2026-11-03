@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_COUPONS, PORTFOLIO_POOL_LIMIT, generatePlans, stakeUnitKurus } from '../optimizer';
+import { MAX_COUPONS, MIN_SYSTEM_SHARE, PORTFOLIO_POOL_LIMIT, generatePlans, stakeUnitKurus } from '../optimizer';
 import { buildPlan } from '../plan';
 import { MIN_STAKE_KURUS } from '../money';
-import { RISK_LIMITS } from '../probability';
 import { matchExposures } from '../risk';
 import type { MatchSelection, Plan } from '../../types';
 import { sel, TL } from './fixtures';
@@ -47,54 +46,53 @@ describe('generatePlans — tek önerilen kupon seti', () => {
     }
   });
 
-  it('maksimum kâr tercihi tüm bütçeyi tek kupona koyar', () => {
+  it('maksimum kâr tercihi de bütçeyi böler ve sistem ağırlıklı dağıtır', () => {
     const result = generatePlans(sample, TL(300), 'aggressive');
-    expect(result.plan!.parts).toHaveLength(1);
+    expect(result.plan!.parts.length).toBeGreaterThanOrEqual(2);
+    expect(result.plan!.parts.some((p) => p.kind === 'system')).toBe(true);
     expect(result.plan!.totalStakeKurus).toBeGreaterThan(TL(299));
   });
 
-  it('temkinli tercih bütçeyi böler ve hiç dönüş alamama ihtimalini düşürür', () => {
+  it('temkinli tercih hiç dönüş alamama ihtimalini maksimum kârdan düşük tutar', () => {
     const cautious = generatePlans(sample, TL(300), 'cautious');
     const aggressive = generatePlans(sample, TL(300), 'aggressive');
-    expect(cautious.plan!.parts.length).toBeGreaterThan(1);
     expect(cautious.stats!.probNoReturn).toBeLessThan(aggressive.stats!.probNoReturn);
     expect(aggressive.stats!.expectedReturnKurus).toBeGreaterThanOrEqual(cautious.stats!.expectedReturnKurus);
   });
 
-  it('maksimum kâr tercihinde öneri, tek kupon karşılaştırmalarından geri kalmaz', () => {
-    const result = generatePlans(sample, TL(300), 'aggressive');
-    for (const c of result.comparisons) expect(result.stats!.score).toBeGreaterThanOrEqual(c.stats.score - TL(1));
-  });
-
-  it('temkinli ve dengeli tercihlerde maç başına yoğunlaşma sınırına uyar', () => {
-    for (const risk of ['cautious', 'balanced'] as const) {
-      const result = generatePlans(sample, TL(300), risk);
-      const limits = RISK_LIMITS[risk];
-      expect(result.riskLimits.relaxed).toBe(false);
-      for (const e of matchExposures(result.plan!, sample)) {
-        expect(e.couponCount).toBeLessThanOrEqual(limits.maxCouponsPerMatch);
-        expect(e.share).toBeLessThanOrEqual(limits.maxExposure + 0.01);
+  it('her risk tercihinde bütçenin en az yarısı sistem kuponlarına gider ve en az 2 kupon olur', () => {
+    const similar = ['A', 'B', 'C', 'D', 'E', 'F'].map((id, i) => sel(id, 1.7 + i * 0.05, 7));
+    const three = ['X', 'Y', 'Z'].map((id) => sel(id, 1.8, 7));
+    for (const selections of [sample, similar, three, [...sample, sel('banko', 1.35, 10)]]) {
+      for (const risk of ['cautious', 'balanced', 'aggressive'] as const) {
+        const result = generatePlans(selections, TL(300), risk);
+        const plan = result.plan!;
+        assertPlanInvariants(plan, TL(300), selections);
+        const systemStake = plan.parts.reduce((sum, p) => sum + (p.kind === 'system' ? p.stakeKurus : 0), 0);
+        expect(plan.parts.length).toBeGreaterThanOrEqual(2);
+        expect(systemStake).toBeGreaterThanOrEqual(MIN_SYSTEM_SHARE * TL(300) - TL(1));
+        expect(result.notes.join(' ')).toContain('Sistem ağırlıklı');
       }
     }
   });
 
-  it('güven puanı çok yüksek tek maç temkinli öneride tüm kuponlara girmez', () => {
+  it('maç başına kupon sınırı yoktur: banko bir maç her kupona girebilir', () => {
     const withBanker = [...sample, sel('banko', 1.35, 10)];
-    const result = generatePlans(withBanker, TL(300), 'cautious');
-    const banker = matchExposures(result.plan!, withBanker).find((e) => e.selectionIds.includes('banko'));
-    if (banker) {
-      expect(banker.couponCount).toBeLessThanOrEqual(2);
-      expect(banker.share).toBeLessThanOrEqual(0.51);
+    for (const risk of ['cautious', 'balanced'] as const) {
+      const result = generatePlans(withBanker, TL(300), risk);
+      assertPlanInvariants(result.plan!, TL(300), withBanker);
+      const banker = matchExposures(result.plan!, withBanker).find((e) => e.selectionIds.includes('banko'));
+      expect(banker?.couponCount ?? 0).toBeLessThanOrEqual(result.plan!.parts.length);
     }
-    expect(result.plan!.parts.length).toBeGreaterThan(1);
   });
 
-  it('seçim az olduğunda sınırı gevşetir ve bunu bildirir', () => {
-    // İki seçim de en az 2 maçlı kupon istiyor: tek mümkün kupon ikili normal kupon (maç başına %100).
-    const result = generatePlans([sel('x', 2, 7, 2), sel('y', 1.8, 8, 2)], TL(300), 'cautious');
-    expect(result.plan).not.toBeNull();
-    expect(result.riskLimits.relaxed).toBe(true);
-    expect(result.notes.join(' ')).toContain('gevşetildi');
+  it('sistem kurulamıyorsa kuralları gevşetir ve nedenini yazar', () => {
+    // İki seçim de en az 2 maçlı kupon istiyor: sistem kurulamaz, tek mümkün kupon ikili normal kupon.
+    const pair = generatePlans([sel('x', 2, 7, 2), sel('y', 1.8, 8, 2)], TL(300), 'cautious');
+    expect(pair.plan!.parts).toHaveLength(1);
+    const notes = pair.notes.join(' ');
+    expect(notes).toContain('normal kuponlardan');
+    expect(notes).toContain('tek kupon');
   });
 
   it('sonucu işaretlenmiş maçları yeni öneriye almaz', () => {

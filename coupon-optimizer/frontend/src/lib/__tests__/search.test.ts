@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MARKETS } from '../../data/markets';
+import { MARKETS, quickPick } from '../../data/markets';
 import { TEAMS } from '../../data/teams';
 import { normalizeSearch, searchItems } from '../search';
 
@@ -45,5 +45,28 @@ describe('bahis seçimleri', () => {
 
   it('tekrar eden seçim yok', () => {
     expect(new Set(MARKETS.map((m) => m.value)).size).toBe(MARKETS.length);
+  });
+
+  it('maç sonucu × 3.5 / 4.5 alt-üst kombineleri var ve aranabilir', () => {
+    for (const v of ['3.5 Üst', '3.5 Alt', '4.5 Üst', '4.5 Alt', 'MS 1 & 4.5 Alt', 'MS 2 & 3.5 Üst', 'MS X & 3.5 Alt', 'ÇŞ X-2 & 4.5 Alt']) {
+      expect(MARKETS.some((m) => m.value === v)).toBe(true);
+    }
+    expect(top('ms1 4.5 alt', markets)[0]).toBe('MS 1 & 4.5 Alt');
+    expect(top('ms 2 & 3,5 üst', markets)[0]).toBe('MS 2 & 3.5 Üst');
+  });
+});
+
+describe('hızlı düğmelerle birleştirme', () => {
+  it('birleştir kapalıyken seçimi değiştirir', () => {
+    expect(quickPick('MS 1', '4.5 Alt', false)).toBe('4.5 Alt');
+  });
+
+  it('birleştir açıkken ekler, aynı gruptakinin yerine geçer ve tekrar basılınca kaldırır', () => {
+    expect(quickPick('', 'MS 1', true)).toBe('MS 1');
+    expect(quickPick('MS 1', '4.5 Alt', true)).toBe('MS 1 & 4.5 Alt');
+    expect(quickPick('MS 1 & 2.5 Alt', '4.5 Alt', true)).toBe('MS 1 & 4.5 Alt');
+    expect(quickPick('MS 1 & 4.5 Alt', 'MS 2', true)).toBe('MS 2 & 4.5 Alt');
+    expect(quickPick('MS 1 & 4.5 Alt', 'KG Var', true)).toBe('MS 1 & 4.5 Alt & KG Var');
+    expect(quickPick('MS 1 & 4.5 Alt', '4.5 Alt', true)).toBe('MS 1');
   });
 });

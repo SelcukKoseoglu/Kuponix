@@ -3,6 +3,9 @@ import type { MatchSelection, PartInput, Plan } from '../../types';
 import { buildPlan } from '../../lib/plan';
 import { MIN_STAKE_KURUS, formatNumber, formatOdds, formatTL, kurusToInput, parseMoneyToKurus } from '../../lib/money';
 
+/** Çok kolonlu sistemlerde (ör. 15 maç) liste bu kadar kolonla sınırlanır; tümü hesaba dahildir. */
+const MAX_LISTED_COLUMNS = 200;
+
 type Props = {
   plan: Plan;
   selectionsById: Map<string, MatchSelection>;
@@ -26,7 +29,7 @@ export function PlanDetails({ plan, selectionsById, onUpdate }: Props) {
           <p className="mt-1 text-slate-400">
             1–4 maçlık normal kuponlar ve 3–5 maçlık tüm geçerli sistem kuponları aday olarak üretildi. Her maçın tutma ihtimali senin
             güven puanından alındı (7/10 → %70). Bütçe {formatTL(plan.budgetKurus)} küçük birimlere bölünüp “beklenen dönüş − risk ×
-            dalgalanma” hedefini en çok artıran kuponlara dağıtıldı (en fazla 4 kupon, her kupon en az 50 TL). Aynı maçı paylaşan
+            dalgalanma” hedefini en çok artıran kuponlara dağıtıldı (en fazla 4 kupon, her kupon en az 50 TL, bütçenin en az yarısı sistem kuponlarına, en az 2 kupon). Aynı maçı paylaşan
             kuponların birlikte kazanıp kaybettiği hesaba katıldı.
           </p>
           <p className="mt-1 text-slate-400">
@@ -51,7 +54,7 @@ export function PlanDetails({ plan, selectionsById, onUpdate }: Props) {
                 {part.label}: {part.columns.length} geçerli kolon × {formatTL(part.perColumnKurus)}
               </h5>
               <ul className="mt-2 max-h-72 space-y-1 overflow-y-auto pr-1">
-                {part.columns.map((c, ci) => (
+                {part.columns.slice(0, MAX_LISTED_COLUMNS).map((c, ci) => (
                   <li key={ci} className="rounded-md bg-slate-900 px-2 py-1.5">
                     <div className="flex justify-between gap-2 text-xs text-slate-400">
                       <span>
@@ -64,17 +67,23 @@ export function PlanDetails({ plan, selectionsById, onUpdate }: Props) {
                     <div className="break-words text-xs text-slate-200">{c.selectionIds.map(name).join(' + ')}</div>
                   </li>
                 ))}
+                {part.columns.length > MAX_LISTED_COLUMNS && (
+                  <li className="px-2 py-1 text-xs text-slate-400">… ve {part.columns.length - MAX_LISTED_COLUMNS} kolon daha</li>
+                )}
               </ul>
               {part.excludedColumns.length > 0 && (
                 <>
                   <h6 className="mt-3 font-semibold text-amber-200">Çıkarılan kolonlar ({part.excludedColumns.length})</h6>
                   <ul className="mt-1 max-h-48 space-y-1 overflow-y-auto pr-1 text-xs">
-                    {part.excludedColumns.map((c, ci) => (
+                    {part.excludedColumns.slice(0, MAX_LISTED_COLUMNS).map((c, ci) => (
                       <li key={ci} className="rounded-md bg-amber-950/30 px-2 py-1.5">
                         <div className="break-words text-slate-200">{c.selectionIds.map(name).join(' + ')}</div>
                         <div className="text-amber-200/80">{c.reason}</div>
                       </li>
                     ))}
+                    {part.excludedColumns.length > MAX_LISTED_COLUMNS && (
+                      <li className="px-2 py-1 text-slate-400">… ve {part.excludedColumns.length - MAX_LISTED_COLUMNS} kolon daha</li>
+                    )}
                   </ul>
                 </>
               )}

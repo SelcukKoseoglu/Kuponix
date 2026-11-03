@@ -26,33 +26,20 @@ export const MARKETS: Market[] = [
   { value: 'KG Var', group: 'Karşılıklı Gol', popular: true, aliases: ['karşılıklı gol var', 'btts'] },
   { value: 'KG Yok', group: 'Karşılıklı Gol', popular: true, aliases: ['karşılıklı gol yok'] },
   ...m('İlk Yarı', ['İY 1', 'İY X', 'İY 2', 'İY ÇŞ 1-X', 'İY ÇŞ X-2', 'İY KG Var', 'İY KG Yok']),
-  ...overUnder('İY ', [0.5, 1.5, 2.5], 'İlk Yarı'),
-  ...overUnder('2Y ', [0.5, 1.5], 'İkinci Yarı'),
+  ...overUnder('İY ', [0.5, 1.5, 2.5, 3.5], 'İlk Yarı'),
+  ...overUnder('2Y ', [0.5, 1.5, 2.5, 3.5], 'İkinci Yarı'),
   ...m('İY/MS', ['1/1', '1/X', '1/2', 'X/1', 'X/X', 'X/2', '2/1', '2/X', '2/2'].map((v) => `İY/MS ${v}`)),
+  // Maç sonucu / çifte şans × 1.5–4.5 alt/üst, ör. "MS 1 & 4.5 Alt", "ÇŞ X-2 & 3.5 Üst".
   ...m(
     'Kombine',
-    [
-      'MS 1 & 1.5 Üst',
-      'MS 1 & 2.5 Üst',
-      'MS 1 & 2.5 Alt',
-      'MS 1 & 3.5 Alt',
-      'MS X & 2.5 Alt',
-      'MS 2 & 1.5 Üst',
-      'MS 2 & 2.5 Üst',
-      'MS 2 & 2.5 Alt',
-      'MS 1 & KG Var',
-      'MS 1 & KG Yok',
-      'MS X & KG Var',
-      'MS 2 & KG Var',
-      'MS 2 & KG Yok',
-      'KG Var & 2.5 Üst',
-      'KG Yok & 2.5 Alt',
-      'ÇŞ 1-X & 1.5 Üst',
-      'ÇŞ 1-X & 2.5 Alt',
-      'ÇŞ X-2 & 1.5 Üst',
-      'ÇŞ X-2 & 2.5 Alt',
-      'ÇŞ 1-2 & 1.5 Üst',
-    ],
+    ['MS 1', 'MS X', 'MS 2', 'ÇŞ 1-X', 'ÇŞ X-2', 'ÇŞ 1-2'].flatMap((result) =>
+      [1.5, 2.5, 3.5, 4.5].flatMap((line) => [`${result} & ${line.toFixed(1)} Üst`, `${result} & ${line.toFixed(1)} Alt`]),
+    ),
+  ),
+  ...m('Kombine', ['MS 1 & KG Var', 'MS 1 & KG Yok', 'MS X & KG Var', 'MS X & KG Yok', 'MS 2 & KG Var', 'MS 2 & KG Yok']),
+  ...m(
+    'Kombine',
+    [1.5, 2.5, 3.5, 4.5].flatMap((line) => [`KG Var & ${line.toFixed(1)} Üst`, `KG Var & ${line.toFixed(1)} Alt`, `KG Yok & ${line.toFixed(1)} Alt`]),
   ),
   ...m('Handikap', [
     'Hnd. MS 1 (0:1)',
@@ -67,13 +54,9 @@ export const MARKETS: Market[] = [
     'AH 2 (+1.5)',
   ]),
   ...m('Toplam Gol', ['Toplam Gol 0-1', 'Toplam Gol 2-3', 'Toplam Gol 4-5', 'Toplam Gol 6+']),
+  ...overUnder('Ev ', [0.5, 1.5, 2.5, 3.5], 'Takım Golü'),
+  ...overUnder('Dep ', [0.5, 1.5, 2.5, 3.5], 'Takım Golü'),
   ...m('Takım Golü', [
-    'Ev 0.5 Üst',
-    'Ev 1.5 Üst',
-    'Ev 2.5 Üst',
-    'Dep 0.5 Üst',
-    'Dep 1.5 Üst',
-    'Dep 2.5 Üst',
     'Ev Gol Yemez',
     'Dep Gol Yemez',
     'İlk Golü Ev Atar',
@@ -108,4 +91,24 @@ for (const value of ['2.5 Üst', '2.5 Alt', '1.5 Üst', 'ÇŞ 1-X', 'ÇŞ X-2', 
   if (market) market.popular = true;
 }
 
-export const QUICK_MARKETS = ['MS 1', 'MS X', 'MS 2', '1.5 Üst', '2.5 Üst', '2.5 Alt', 'KG Var', 'KG Yok'];
+export const QUICK_MARKETS: { label: string; values: string[] }[] = [
+  { label: 'MS', values: ['MS 1', 'MS X', 'MS 2'] },
+  { label: 'Alt/Üst', values: ['1.5 Üst', '2.5 Üst', '2.5 Alt', '3.5 Üst', '3.5 Alt', '4.5 Üst', '4.5 Alt'] },
+  { label: 'KG', values: ['KG Var', 'KG Yok'] },
+];
+
+/**
+ * Hızlı düğme davranışı. Birleştir kapalıyken seçimi değiştirir. Açıkken "&" ile ekler; aynı gruptan bir parçanın
+ * yerine geçer (ör. MS 1 & 2.5 Alt iken 4.5 Alt'a basılırsa MS 1 & 4.5 Alt olur) ve seçili parçaya tekrar basılırsa kaldırır.
+ */
+export function quickPick(current: string, value: string, combine: boolean): string {
+  if (!combine || !current.trim()) return value;
+  const group = (part: string) => QUICK_MARKETS.find((g) => g.values.includes(part))?.label ?? part;
+  const parts = current
+    .split(' & ')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.includes(value)) return parts.filter((p) => p !== value).join(' & ');
+  const replaces = parts.some((p) => group(p) === group(value));
+  return (replaces ? parts.map((p) => (group(p) === group(value) ? value : p)) : [...parts, value]).join(' & ');
+}

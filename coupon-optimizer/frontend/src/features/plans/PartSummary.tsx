@@ -56,7 +56,9 @@ export function PartSummary({ part, index, selectionsById }: Props) {
 }
 
 function SystemFacts({ part }: { part: SystemCoupon }) {
-  const odds = part.columns.map((c) => c.combinedOdds);
+  // Binlerce kolonda yayma (...) yerine döngü: çağrı yığını sınırına takılmaz.
+  const minOdds = part.columns.reduce((m, c) => Math.min(m, c.combinedOdds), Number.POSITIVE_INFINITY);
+  const maxOdds = part.columns.reduce((m, c) => Math.max(m, c.combinedOdds), 0);
   const rows = part.scenarios.filter((s, i, all) => s.maxReturnKurus > 0 || (i > 0 && all[i - 1].maxReturnKurus > 0));
   return (
     <div className="mt-2 border-t border-slate-800 pt-2">
@@ -67,7 +69,7 @@ function SystemFacts({ part }: { part: SystemCoupon }) {
         </dd>
         <dt className="text-slate-400">Kolon oranları</dt>
         <dd className="text-right tabular-nums">
-          {formatOdds(Math.min(...odds))} – {formatOdds(Math.max(...odds))}
+          {formatOdds(minOdds)} – {formatOdds(maxOdds)}
         </dd>
       </dl>
       {part.excludedColumns.length > 0 && (

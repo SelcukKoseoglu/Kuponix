@@ -6,6 +6,7 @@
  * Bu GERÇEK bir olasılık değildir; sonuçlar ancak kullanıcının tahminleri kadar iyidir.
  */
 import type { MatchSelection, Plan, PlanStats, RiskProfile } from '../types';
+import { payoutPerColumnUnit, prepareShape } from './payout';
 
 export const MAX_SUBJECTIVE_PROB = 0.95;
 
@@ -16,28 +17,18 @@ export const RISK_LAMBDA: Record<RiskProfile, number> = {
   aggressive: 0,
 };
 
-/**
- * Maç başına yoğunlaşma sınırları. Güven puanı ne kadar yüksek olursa olsun tek bir maç yatarsa
- * bütçenin en fazla `maxExposure` kadarı kaybedilebilir ve bir maç en fazla `maxCouponsPerMatch` kupona girer.
- */
-export const RISK_LIMITS: Record<RiskProfile, { maxExposure: number; maxCouponsPerMatch: number }> = {
-  cautious: { maxExposure: 0.5, maxCouponsPerMatch: 2 },
-  balanced: { maxExposure: 0.75, maxCouponsPerMatch: 3 },
-  aggressive: { maxExposure: 1, maxCouponsPerMatch: 4 },
-};
-
 export const RISK_LABELS: Record<RiskProfile, { title: string; description: string }> = {
   cautious: {
     title: 'Temkinli',
-    description: 'Bütçeyi farklı maçlara yayar: bir maç en fazla 2 kupona girer, tek maç yatarsa bütçenin en fazla %50’si yanar.',
+    description: 'Hiç dönüş alamama ihtimalini azaltmaya öncelik verir; bütçeyi sistem ağırlıklı olarak daha çok kupona yayar.',
   },
   balanced: {
     title: 'Dengeli',
-    description: 'Beklenen kâr ile risk arasında denge kurar: bir maç en fazla 3 kupona girer, tek maç bütçenin en fazla %75’ini etkiler.',
+    description: 'Beklenen kâr ile risk arasında denge kurar; bütçenin en az yarısı sistem kuponlarına gider.',
   },
   aggressive: {
     title: 'Maksimum beklenen kâr',
-    description: 'Yalnızca beklenen dönüşe bakar; genellikle bütçenin tamamını tek kupona koyar ve riski en yüksektir.',
+    description: 'Beklenen dönüşü en yükseğe çıkarır; bütçeyi yine sistem ağırlıklı en az 2 kupona böler, riski en yüksektir.',
   },
 };
 
@@ -91,10 +82,60 @@ export function planTerms(plan: Plan): PayoutTerm[] {
   );
 }
 
+/**
+ * Planın dağılım özeti. Tüm 2^n sonuç (n = plandaki seçim sayısı, en fazla 16) taranır; sistem kuponlarının dönüşü
+ * kolonlar dolaşılmadan kazananların oranlarından hesaplanır.
+ */
 export function evaluatePlan(plan: Plan, selections: readonly MatchSelection[], riskProfile: RiskProfile): PlanStats {
   const byId = new Map(selections.map((s) => [s.id, s]));
+  const index = new Map(plan.selectionIds.map((id, i) => [id, i]));
   const probs = plan.selectionIds.map((id) => subjectiveProbability(byId.get(id)?.confidence ?? 0));
-  const d = summarizeDistribution(probs, planTerms(plan), plan.totalStakeKurus);
+  const maskOf = (ids: string[]) => ids.reduce((m, id) => m | (1 << index.get(id)!), 0);
+  const maxSize = Math.max(...plan.parts.map((p) => p.selectionCount));
+  const out = new Float64Array(maxSize + 1);
+  const scratch = new Float64Array(maxSize + 1);
+
+  const parts = plan.parts.map((part) => {
+    if (part.kind === 'normal') return { mask: maskOf(part.selectionIds), amount: part.grossReturnKurus, positions: [] as number[], shape: null };
+    // Seçim listeden silinmişse (öneri bayatsa) oran 1 sayılır; öneri yeniden hesaplanınca düzelir.
+    const items = part.selectionIds.map((id) => byId.get(id));
+    const shape = prepareShape({
+      odds: items.map((s) => s?.odds ?? 1),
+      minMatches: items.map((s) => s?.minMatches ?? 1),
+      minSize: part.minSize,
+    });
+    return { mask: 0, amount: part.perColumnKurus, positions: part.selectionIds.map((id) => index.get(id)!), shape };
+  });
+
+  const n = probs.length;
+  let mean = 0;
+  let secondMoment = 0;
+  let probNoReturn = 0;
+  let probAbove = 0;
+  let max = 0;
+  for (let winners = 0; winners < 2 ** n; winners++) {
+    let p = 1;
+    for (let i = 0; i < n; i++) p *= winners & (1 << i) ? probs[i] : 1 - probs[i];
+    if (p === 0) continue;
+    let total = 0;
+    for (const part of parts) {
+      if (!part.shape) {
+        if ((part.mask & winners) === part.mask) total += part.amount;
+        continue;
+      }
+      let local = 0;
+      part.positions.forEach((pos, i) => {
+        if (winners & (1 << pos)) local |= 1 << i;
+      });
+      total += part.amount * payoutPerColumnUnit(part.shape, local, out, scratch);
+    }
+    mean += p * total;
+    secondMoment += p * total * total;
+    if (total < 0.5) probNoReturn += p;
+    if (total > plan.totalStakeKurus) probAbove += p;
+    if (total > max) max = total;
+  }
+  const d = { mean, stdDev: Math.sqrt(Math.max(0, secondMoment - mean * mean)), probNoReturn, probAbove, max };
   return {
     stakeKurus: plan.totalStakeKurus,
     expectedReturnKurus: Math.round(d.mean),

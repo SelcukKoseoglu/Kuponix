@@ -43,36 +43,32 @@ npm run build      # üretim derlemesi → dist/
 “Hepsini tek kupona mı yatırmalı, yoksa bölmeli mi?” sorusunun cevabı her maçın tutma ihtimaline bağlıdır. Uygulamada bu ihtimalin tek kaynağı senin güven puanındır.
 
 - **Öznel olasılık:** `güven / 10` (7 → %70), en fazla %95. Maçlar birbirinden bağımsız sayılır. Bu gerçek bir olasılık değildir; öneri, tahminlerin ne kadar isabetliyse o kadar iyidir.
-- **Aday kuponlar:**
-  - 1–4 maçlık normal kuponlar,
-  - 3–5 maçlık tüm geçerli `Sistem k,…,n` kuponları.
+- **Aday kuponlar:** Kupon ve sistem boyutuna ayrıca bir sınır yoktur; havuzdaki bütün maçları kapsayan bir sistem (ör. 15 maçta `Sistem 14,15`) veya kombine de önerilebilir.
+  - 1–4 maçlık normal kuponların ve 3–5 maçlık `Sistem k,…,n` kuponlarının tüm kombinasyonları taranır.
+  - Daha büyük kombineler ve sistemler (6 maçtan havuzdaki tüm maçlara kadar, her k ile) üç sıralamanın ilk n maçından kurulur: öznel beklenen dönüş (olasılık × oran), güven ve güven ÷ oran. Tüm kombinasyonları taramak 15 maçta milyonlarca aday demektir; bu yüzden büyük boyutlarda bu öneklerle sınırlı kalınır.
+  - 50 TL alt sınırına sığmayan biçimler (kolon sayısı bütçeye göre çok fazla olanlar) aday yapılmaz.
 
   Aynı maçtan iki seçim aynı kupona konmaz. Min. maç kuralına uymayan kolonlar atılır.
-- **Ortak hareket:** Aday kuponların ödemeleri, havuzdaki maçların tüm 2^m sonucu üzerinden hesaplanır. Böylece aynı maçı paylaşan kuponların birlikte kazanıp kaybettiği hesaba katılır.
+- **Kolonsuz hesap:** Bir sonuçta kazanan maçlar belliyken, bir sistemin kazanan kolonlarının toplam dönüşü kazananların oranlarından tek döngüyle bulunur (elementer simetrik polinomlar; min. maç kuralı dahil). Böylece binlerce kolonlu sistemler kolon kolon dolaşılmadan değerlendirilir. Kolon kolon saymayla aynı sonucu verdiği testlerle doğrulanır.
+- **Ortak hareket:** Aday kuponların ödemeleri havuzdaki maçların sonuçları üzerinden hesaplanır; böylece aynı maçı paylaşan kuponların birlikte kazanıp kaybettiği hesaba katılır. Havuz 12 maça kadarsa tüm 2^m sonuç kesin olarak kullanılır. Daha büyük havuzlarda dağıtım kararı, sabit tohumlu 4.096 örnek senaryoyla verilir; aynı girdi her zaman aynı öneriyi verir. Ekranda gösterilen olasılık ve beklenen dönüşler ise her zaman kesin hesaplanır.
 - **Hedef:** `beklenen dönüş − λ × standart sapma`. λ risk tercihine göre değişir:
 
   | Risk tercihi | λ | Tipik sonuç |
   |---|---|---|
   | Temkinli | 1 | Bütçe birkaç kupona yayılır, hiç dönüş alamama ihtimali düşer |
   | Dengeli | 0,5 | Beklenen kâr ile risk dengelenir |
-  | Maksimum beklenen kâr | 0 | Genellikle bütçenin tamamı beklenen dönüşü en yüksek tek kupona gider |
+  | Maksimum beklenen kâr | 0 | Beklenen dönüş en yükseğe çıkarılır; bütçe yine sistem ağırlıklı en az 2 kupona bölünür |
 
 - **Dağıtım:** Bütçe birimlere bölünür: 200 TL ve üstünde 10 TL, 50–200 TL arasında 5 TL, daha azında 1 TL. Birimler, hedefi en çok artıran kuponlara açgözlü yöntemle dağıtılır. Sonra kuponlar arasında tutar aktarılarak yerel iyileştirme yapılır ve en iyi sonuç birkaç farklı başlangıçtan seçilir.
-- **Maç başına yoğunlaşma sınırı:** Güven puanı ne kadar yüksek olursa olsun, tek bir maçın yatması bütün kuponları birden yakmasın diye:
-
-  | Risk tercihi | Bir maç en fazla | Tek maç yatarsa yanan en fazla |
-  |---|---|---|
-  | Temkinli | 2 kupona girer | bütçenin %50'si |
-  | Dengeli | 3 kupona girer | bütçenin %75'i |
-  | Maksimum beklenen kâr | sınır yok | sınır yok |
-
-  “Yanan” tutar şunların toplamıdır: maçı içeren normal kuponların tamamı ve sistem kuponlarında o maçı içeren kolonların tutarı. Seçim sayısı sınırı karşılamaya yetmezse sınır adım adım gevşetilir ve öneride bu yazılır. Öneri ekranındaki **Maç bazında risk** tablosu her maç için kaç kupona girdiğini, yatarsa bütçenin yüzde kaçının yandığını ve yalnız o maç yatarsa toplam dönüşü gösterir. Tek kupon karşılaştırması da yalnızca bu sınıra uyuyorsa öneri olarak seçilir.
+- **Maç başına sınır yok:** Bir maçın kaç kupona gireceği sınırlanmaz; algoritma bir maçı uygun görürse o maç tüm kuponlarda yer alabilir. Öneri ekranındaki **Maç bazında risk** tablosu her maç için kaç kupona girdiğini, yatarsa bütçenin yüzde kaçının yandığını (maçı içeren normal kuponlar + sistemlerde o maçı içeren kolonlar) ve yalnız o maç yatarsa toplam dönüşü bilgi olarak gösterir.
+- **Sistem ağırlıklı dağılım (tüm risk tercihlerinde):** Uygulamanın amacı sistem ağırlıklı kuponlardır. Bu yüzden sistem kurulabiliyorsa (min. maç koşullarına uyan, farklı maçlardan en az 3 seçim) öneride en az bir sistem kuponu bulunur ve **bütçenin en az yarısı sistem kuponlarına** gider. Bütçe en az 100 TL ise **en az 2 kupona** bölünür; hiçbir tercih bütçenin tamamını tek kupona koymaz. Hangi sistemlerin, hangi maçlarla ve ne kadar tutarla oynanacağına optimizer karar verir. Kurallar karşılanamazsa sırayla gevşetilir (önce sistem payı, sonra sistem zorunluluğu, en son bölme kuralı) ve nedeni öneride yazılır.
 - **Kısıtlar:**
   - en fazla 4 kupon,
   - **her kupon (normal ve sistem) en az 50 TL**; bütçe 50 TL'nin altındaysa öneri üretilmez,
   - toplam tutar bütçeyi aşmaz ve bütçenin tamamı dağıtılır (sistem kolonlarının kuruş yuvarlaması hariç).
 - **Karşılaştırma:** Önerinin yanında, bütçenin tamamını tek normal veya tek sistem kuponuna koymanın beklenen dönüşü, kâr ihtimali ve sıfır dönüş ihtimali gösterilir. Böylece önerinin nedeni görülebilir.
-- **Havuz sınırı:** Sonucu işaretlenmiş maçlar yeni öneriye alınmaz. 12'den fazla bekleyen seçim varsa `güven × oran` değeri en yüksek 12 seçim değerlendirilir.
+- **Havuz sınırı:** Sonucu işaretlenmiş maçlar yeni öneriye alınmaz. Aynı anda en fazla 16 seçim değerlendirilir; daha fazlası varsa `güven × oran` değeri en yüksek 16 seçim alınır. Bu bir kupon kuralı değil, tarayıcıda hesap süresini makul tutan teknik sınırdır (15 maçta bir öneri yaklaşık 0,5–1 saniye sürer). Bir sistem kuponunda da en fazla 16 seçim olabilir.
+- **Kolon başına tutar:** Çok kolonlu sistemlerde kolon başına tutar kuruşlara kadar düşebilir (ör. 16.278 kolon × 0,01 TL). Bahis platformunun kolon başı asgari tutarını ayrıca kontrol et.
 - **Negatif beklenti:** Güven puanlarına göre bile beklenen dönüş yatırımın altındaysa uyarı gösterilir.
 
 ## Kupon kuralları
@@ -115,11 +111,12 @@ frontend/src/
     money.ts         Kuruş bazlı para işlemleri
     validation.ts    Doğrulamalar, maç adı birleştirme/ayırma
     search.ts        Türkçe uyumlu takım/bahis araması
-    risk.ts          Maç bazında yoğunlaşma analizi
+    risk.ts          Maç bazında risk analizi
     combinatorics.ts Kombinasyonlar, sistem kolon sayısı
     calculator.ts    Normal/sistem kupon hesapları
     plan.ts          Kupon setini doğrulayıp hesaplar
     probability.ts   Öznel olasılık modeli, dağılım istatistikleri
+    payout.ts        Kolonsuz sistem dönüşü, sonuç kümeleri (kesin/örnek)
     optimizer.ts     Bütçe dağılımı optimizasyonu
     settlement.ts    Maç sonuçlarına göre kupon dönüşü ve kâr/zarar
     storage.ts       localStorage, JSON şeması, sürüm geçişi
@@ -127,13 +124,14 @@ frontend/src/
 
 ## Testler
 
-`npm test`, 6 dosyada 63 test çalıştırır:
+`npm test`, 7 dosyada 72 test çalıştırır:
 
 | Dosya | Kapsam |
 |---|---|
 | `calculator.test.ts` | Oran çarpımı ve dönüş, Sistem 3,4 = 5 kolon, min. maç kolon dışlama, normal ve sistem kuponunda 50 TL sınırı, kuruş yuvarlama |
-| `optimizer.test.ts` | Bütçe aşılmaması, tek öneri, risk tercihlerinin etkisi, maç başına yoğunlaşma sınırı ve gevşetme, küçük bütçede 50 TL sınırı, sonuçlanmış maçların dışlanması, aynı maç kısıtı, 12+ seçimde performans |
-| `search.test.ts` | Takım ve bahis listelerinin içeriği; Türkçe karakter, kısaltma ve yazım farklarıyla arama |
+| `optimizer.test.ts` | Bütçe aşılmaması, tek öneri, risk tercihlerinin etkisi, maç başına sınır olmaması, tüm tercihlerde sistem ağırlıklı dağılım (en az %50 sistem, en az 2 kupon) ve gevşetme, küçük bütçede 50 TL sınırı, sonuçlanmış maçların dışlanması, aynı maç kısıtı, 16+ seçimde havuz budama ve performans |
+| `payout.test.ts` | Kolonsuz sistem hesabının kolon kolon saymayla aynı sonucu vermesi (min. maç dahil), örnek senaryoların tekrarlanabilirliği, 15 maçlık sistem kuponu, büyük sistemlerin öneriye girmesi |
+| `search.test.ts` | Takım ve bahis listelerinin içeriği (3.5/4.5 kombineleri dahil); Türkçe karakter, kısaltma ve yazım farklarıyla arama; hızlı düğmelerle birleştirme |
 | `settlement.test.ts` | Tuttu/tutmadı/iade/bekliyor durumlarında normal ve sistem kupon dönüşü, kâr/zarar; öznel olasılık istatistikleri |
 | `storage.test.ts` | JSON içe/dışa aktarma, sürüm 1 kayıtlarının okunması, bozuk kaydın yedeklenmesi |
 | `validation.test.ts` | Oran, güven, min. maç ve bütçe validasyonları; takım alanları, eski maç adlarının ayrılması, oyuncu adı kontrolü |
