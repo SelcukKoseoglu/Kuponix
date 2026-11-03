@@ -1,16 +1,28 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { MatchSelection } from '../../types';
-import { EMPTY_DRAFT, validateDraft, type DraftErrors, type SelectionDraft } from '../../lib/validation';
+import { Autocomplete, type AutocompleteOption } from '../../components/Autocomplete';
+import { MARKETS, QUICK_MARKETS } from '../../data/markets';
+import { TEAMS } from '../../data/teams';
+import { normalizeSearch, searchItems } from '../../lib/search';
+import { EMPTY_DRAFT, splitMatchName, validateDraft, type DraftErrors, type SelectionDraft } from '../../lib/validation';
 
 type Props = {
   editing: MatchSelection | null;
+  /** Daha önce girilmiş takım adları (listede olmasalar da aramada çıkar). */
+  knownTeams: string[];
   onSubmit: (value: Omit<MatchSelection, 'id'>) => void;
   onCancelEdit: () => void;
 };
 
+const TEAM_ITEMS = TEAMS.map((t) => ({ value: t.name, aliases: t.aliases, hint: t.league }));
+const MARKET_ITEMS = MARKETS.map((m) => ({ value: m.value, aliases: m.aliases, hint: m.player ? 'Oyuncu özel' : m.group, player: m.player }));
+const POPULAR_MARKETS = MARKET_ITEMS.filter((m) => MARKETS.find((x) => x.value === m.value)?.popular);
+
 function toDraft(s: MatchSelection): SelectionDraft {
+  const { home, away } = splitMatchName(s.matchName);
   return {
-    matchName: s.matchName,
+    homeTeam: home,
+    awayTeam: away,
     marketSelection: s.marketSelection,
     odds: String(s.odds).replace('.', ','),
     minMatches: String(s.minMatches),
@@ -19,10 +31,13 @@ function toDraft(s: MatchSelection): SelectionDraft {
   };
 }
 
-export function SelectionForm({ editing, onSubmit, onCancelEdit }: Props) {
+const toOption = (item: { value: string; hint?: string }): AutocompleteOption => ({ value: item.value, hint: item.hint });
+
+export function SelectionForm({ editing, knownTeams, onSubmit, onCancelEdit }: Props) {
   const [draft, setDraft] = useState<SelectionDraft>(EMPTY_DRAFT);
   const [errors, setErrors] = useState<DraftErrors>({});
   const firstInput = useRef<HTMLInputElement>(null);
+  const marketInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setDraft(editing ? toDraft(editing) : EMPTY_DRAFT);
@@ -30,9 +45,34 @@ export function SelectionForm({ editing, onSubmit, onCancelEdit }: Props) {
     if (editing) firstInput.current?.focus();
   }, [editing]);
 
+  const teamItems = useMemo(() => {
+    const listed = new Set(TEAM_ITEMS.flatMap((t) => [t.value, ...(t.aliases ?? [])]).map(normalizeSearch));
+    const history = Array.from(new Set(knownTeams.map((n) => n.trim()).filter(Boolean)))
+      .filter((n) => !listed.has(normalizeSearch(n)))
+      .map((value) => ({ value, hint: 'Daha önce girilen' }));
+    return [...history, ...TEAM_ITEMS];
+  }, [knownTeams]);
+
+  const teamOptions = useCallback((q: string) => searchItems(teamItems, q, 8).map(toOption), [teamItems]);
+  const marketOptions = useCallback(
+    (q: string) => (q.trim() ? searchItems(MARKET_ITEMS, q, 12) : POPULAR_MARKETS).map(toOption),
+    [],
+  );
+
   const set = (field: keyof SelectionDraft) => (value: string) => {
     setDraft((d) => ({ ...d, [field]: value }));
     if (errors[field]) setErrors((e) => ({ ...e, [field]: undefined }));
+  };
+
+  const handleMarketPick = (option: AutocompleteOption) => {
+    if (!MARKET_ITEMS.find((m) => m.value === option.value)?.player) return;
+    // Oyuncu şablonu: imleç sona alınır, kullanıcı oyuncu adını yazar.
+    requestAnimationFrame(() => {
+      const el = marketInput.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
   };
 
   const handleSubmit = (e: FormEvent) => {
@@ -61,30 +101,73 @@ export function SelectionForm({ editing, onSubmit, onCancelEdit }: Props) {
         )}
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Maç" error={errors.matchName}>
-          <input
+      <div className="grid items-start gap-3 sm:grid-cols-[1fr_auto_1fr]">
+        <Field label="Ev sahibi" error={errors.homeTeam}>
+          <Autocomplete
             ref={firstInput}
-            className={`input ${errors.matchName ? 'input-error' : ''}`}
-            value={draft.matchName}
-            onChange={(e) => set('matchName')(e.target.value)}
-            placeholder="BJK - CRY"
+            ariaLabel="Ev sahibi takım"
+            value={draft.homeTeam}
+            onChange={set('homeTeam')}
+            getOptions={teamOptions}
+            placeholder="Takım ara: Galatasaray, BJK…"
+            invalid={!!errors.homeTeam}
           />
         </Field>
-        <Field label="Bahis seçimi" error={errors.marketSelection}>
-          <input
-            className={`input ${errors.marketSelection ? 'input-error' : ''}`}
-            value={draft.marketSelection}
-            onChange={(e) => set('marketSelection')(e.target.value)}
-            placeholder="İlk Yarı 0, 2.5 Alt, MS 1…"
+        <button
+          type="button"
+          className="btn-ghost mt-0 self-center sm:mt-6"
+          title="Takımların yerini değiştir"
+          aria-label="Ev sahibi ve deplasmanın yerini değiştir"
+          onClick={() => setDraft((d) => ({ ...d, homeTeam: d.awayTeam, awayTeam: d.homeTeam }))}
+        >
+          ⇄
+        </button>
+        <Field label="Deplasman" error={errors.awayTeam}>
+          <Autocomplete
+            ariaLabel="Deplasman takımı"
+            value={draft.awayTeam}
+            onChange={set('awayTeam')}
+            getOptions={teamOptions}
+            placeholder="Takım ara: Fenerbahçe…"
+            invalid={!!errors.awayTeam}
           />
         </Field>
+      </div>
+
+      <Field label="Bahis seçimi" error={errors.marketSelection}>
+        <Autocomplete
+          ref={marketInput}
+          ariaLabel="Bahis seçimi"
+          value={draft.marketSelection}
+          onChange={set('marketSelection')}
+          onPick={handleMarketPick}
+          getOptions={marketOptions}
+          placeholder="Ara: ms1, 2.5 üst, kg var, 1 & üst, gol atar…"
+          invalid={!!errors.marketSelection}
+        />
+      </Field>
+      <div className="-mt-2 flex flex-wrap gap-1.5" aria-label="Hızlı bahis seçimleri">
+        {QUICK_MARKETS.map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => set('marketSelection')(m)}
+            className={`rounded-md border px-2 py-1 text-xs font-medium transition ${
+              draft.marketSelection === m
+                ? 'border-sky-400 bg-sky-500/20 text-sky-100'
+                : 'border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500'
+            }`}
+          >
+            {m}
+          </button>
+        ))}
       </div>
 
       <div className="grid grid-cols-3 gap-3">
         <Field label="Oran" error={errors.odds}>
           <input
             inputMode="decimal"
+            aria-label="Oran"
             className={`input ${errors.odds ? 'input-error' : ''}`}
             value={draft.odds}
             onChange={(e) => set('odds')(e.target.value)}
@@ -94,6 +177,7 @@ export function SelectionForm({ editing, onSubmit, onCancelEdit }: Props) {
         <Field label="Min. maç" error={errors.minMatches}>
           <input
             inputMode="numeric"
+            aria-label="Minimum maç sayısı"
             className={`input ${errors.minMatches ? 'input-error' : ''}`}
             value={draft.minMatches}
             onChange={(e) => set('minMatches')(e.target.value)}
@@ -103,6 +187,7 @@ export function SelectionForm({ editing, onSubmit, onCancelEdit }: Props) {
         <Field label="Güven (1–10)" error={errors.confidence}>
           <input
             inputMode="numeric"
+            aria-label="Güven puanı"
             className={`input ${errors.confidence ? 'input-error' : ''}`}
             value={draft.confidence}
             onChange={(e) => set('confidence')(e.target.value)}
@@ -112,11 +197,12 @@ export function SelectionForm({ editing, onSubmit, onCancelEdit }: Props) {
       <p id="min-matches-help" className="-mt-1 text-xs leading-relaxed text-slate-400">
         <strong className="text-slate-300">Min. maç:</strong> Bu seçim yalnızca en az bu sayıda seçim içeren bir
         kuponda/kolonda kullanılabilir. Örneğin 2 girilirse tekli oynanamaz; sistem kuponunda bu koşula uymayan kolonlar
-        plandan çıkarılır. <strong className="text-slate-300">Güven</strong> sizin öznel puanınızdır, olasılık değildir.
+        plandan çıkarılır. <strong className="text-slate-300">Güven:</strong> 7 girersen “%70 tutar” diye düşündüğün kabul edilir.
       </p>
 
       <Field label="Not (isteğe bağlı)" error={errors.note}>
         <input
+          aria-label="Not"
           className={`input ${errors.note ? 'input-error' : ''}`}
           value={draft.note}
           onChange={(e) => set('note')(e.target.value)}
@@ -131,12 +217,15 @@ export function SelectionForm({ editing, onSubmit, onCancelEdit }: Props) {
   );
 }
 
+/** Etiket <label> değil <div>: öneri listesine tıklamak, etiket üzerinden alanı yeniden açmasın. */
 function Field({ label, error, children }: { label: string; error?: string; children: ReactNode }) {
   return (
-    <label className="block min-w-0">
-      <span className="label">{label}</span>
+    <div className="block min-w-0">
+      <span className="label" aria-hidden>
+        {label}
+      </span>
       {children}
       {error && <span className="field-error block">{error}</span>}
-    </label>
+    </div>
   );
 }

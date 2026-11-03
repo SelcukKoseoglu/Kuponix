@@ -10,21 +10,34 @@
  *    ardından adaylar arası kovaryans hesaplanır (aynı seçimi paylaşan kuponlar birlikte kazanır/kaybeder).
  * 4. Hedef: beklenen dönüş − λ × standart sapma (λ risk tercihine göre). Bütçe birimlere (ör. 10 TL) bölünür ve
  *    açgözlü dağıtım + birim aktarma ile yerel iyileştirme yapılır (birden çok başlangıç). En fazla MAX_COUPONS kupon.
- * 5. Normal kupon en az 50 TL; toplam tutar bütçeyi asla aşmaz; bütçenin tamamı dağıtılır.
+ * 5. Yoğunlaşma sınırları (risk tercihine göre): tek bir maç yatarsa kaybedilecek tutar bütçenin belirli bir oranını
+ *    aşamaz ve bir maç en fazla belirli sayıda kupona girer. Seçim azlığı nedeniyle sınır karşılanamazsa kademeli gevşetilir.
+ * 6. Her kupon (normal ve sistem) en az 50 TL; toplam tutar bütçeyi asla aşmaz; bütçenin tamamı dağıtılır.
  */
 import type { Comparison, MatchSelection, OptimizationResult, PartInput, Plan, PlanInput, RiskProfile } from '../types';
 import { MIN_SYSTEM_SELECTIONS } from './calculator';
 import { combinations } from './combinatorics';
-import { MIN_NORMAL_STAKE_KURUS, formatTL } from './money';
+import { MIN_STAKE_KURUS, formatTL } from './money';
 import { buildPlan, planSignature } from './plan';
-import { RISK_LABELS, RISK_LAMBDA, evaluatePlan, subjectiveProbability, summarizeDistribution, type PayoutTerm } from './probability';
-import { describeSelection, validateSelection } from './validation';
+import {
+  RISK_LABELS,
+  RISK_LAMBDA,
+  RISK_LIMITS,
+  evaluatePlan,
+  subjectiveProbability,
+  summarizeDistribution,
+  type PayoutTerm,
+} from './probability';
+import { matchExposures } from './risk';
+import { describeSelection, matchKey, validateSelection } from './validation';
 
 export const PORTFOLIO_POOL_LIMIT = 12;
 export const MAX_COUPONS = 4;
 export const MAX_NORMAL_SIZE = 4;
 export const MAX_PORTFOLIO_SYSTEM_SIZE = 5;
-export const SHORTLIST_SIZE = 60;
+export const SHORTLIST_SIZE = 180;
+/** Kısa listede "bu maçlar olmadan" alternatifleri aranacak en gözde maç sayısı. */
+const FAVOURITE_GROUPS = 4;
 const LOCAL_SEARCH_LIMIT = 400;
 const START_COUNT = 6;
 
@@ -45,12 +58,15 @@ type Candidate = {
   std: number;
   probNoReturn: number;
   minUnits: number;
+  /** Maç grubu başına: bu kuponun tutarının, o maç yatarsa kaybedilen oranı (normal: 1, sistem: maçı içeren kolon oranı). */
+  share: Float64Array;
+  groups: number[];
 };
 
-const matchKey = (s: MatchSelection) => s.matchName.trim().toLocaleLowerCase('tr-TR').replace(/\s+/g, ' ');
+type Limits = { maxExposure: number; maxCouponsPerMatch: number };
 
 function hasSameMatch(items: MatchSelection[]): boolean {
-  return new Set(items.map(matchKey)).size !== items.length;
+  return new Set(items.map((s) => matchKey(s.matchName))).size !== items.length;
 }
 
 function buildCandidate(
@@ -59,7 +75,9 @@ function buildCandidate(
   indices: number[],
   kind: Candidate['kind'],
   minSize: number,
-  normalMinUnits: number,
+  unitKurus: number,
+  groupOf: number[],
+  groupCount: number,
 ): Candidate | null {
   const items = indices.map((i) => pool[i]);
   if (hasSameMatch(items)) return null;
@@ -83,6 +101,11 @@ function buildCandidate(
   }
 
   const d = summarizeDistribution(indices.map((i) => probs[i]), localTerms);
+  const share = new Float64Array(groupCount);
+  local.forEach((i) => {
+    const hits = localTerms.filter((t) => t.mask & (1 << i)).length;
+    share[groupOf[indices[i]]] = hits / localTerms.length;
+  });
   const toPoolMask = (mask: number) => local.reduce((m, i) => (mask & (1 << i) ? m | (1 << indices[i]) : m), 0);
   return {
     kind,
@@ -92,25 +115,31 @@ function buildCandidate(
     mean: d.mean,
     std: d.stdDev,
     probNoReturn: d.probNoReturn,
-    minUnits: kind === 'normal' ? normalMinUnits : 1,
+    minUnits: kind === 'normal' ? Math.ceil(MIN_STAKE_KURUS / unitKurus) : systemMinUnits(localTerms.length, unitKurus),
+    share,
+    groups: Array.from(share.keys()).filter((g) => share[g] > 0),
   };
 }
 
-function generateCandidates(pool: MatchSelection[], probs: number[], normalMinUnits: number, allowNormal: boolean) {
+function generateCandidates(
+  pool: MatchSelection[],
+  probs: number[],
+  unitKurus: number,
+  groupOf: number[],
+  groupCount: number,
+) {
   const all = pool.map((_, i) => i);
   const candidates: Candidate[] = [];
-  if (allowNormal) {
-    for (let size = 1; size <= Math.min(MAX_NORMAL_SIZE, pool.length); size++) {
-      for (const idx of combinations(all, size)) {
-        const c = buildCandidate(pool, probs, idx, 'normal', size, normalMinUnits);
-        if (c) candidates.push(c);
-      }
+  for (let size = 1; size <= Math.min(MAX_NORMAL_SIZE, pool.length); size++) {
+    for (const idx of combinations(all, size)) {
+      const c = buildCandidate(pool, probs, idx, 'normal', size, unitKurus, groupOf, groupCount);
+      if (c) candidates.push(c);
     }
   }
   for (let size = MIN_SYSTEM_SELECTIONS; size <= Math.min(MAX_PORTFOLIO_SYSTEM_SIZE, pool.length); size++) {
     for (const idx of combinations(all, size)) {
       for (let k = 2; k < size; k++) {
-        const c = buildCandidate(pool, probs, idx, 'system', k, normalMinUnits);
+        const c = buildCandidate(pool, probs, idx, 'system', k, unitKurus, groupOf, groupCount);
         if (c) candidates.push(c);
       }
     }
@@ -118,15 +147,45 @@ function generateCandidates(pool: MatchSelection[], probs: number[], normalMinUn
   return candidates;
 }
 
+/**
+ * Sistem kuponunun en az kaç birim alması gerektiği: kolon başına tutar kuruşa aşağı yuvarlandığı için
+ * fiili tutarın (kolon başı × kolon sayısı) 50 TL'nin altına düşmemesi gerekir.
+ */
+export function systemMinUnits(columns: number, unitKurus: number): number {
+  return Math.ceil((Math.ceil(MIN_STAKE_KURUS / columns) * columns) / unitKurus);
+}
+
 const individualScore = (c: Candidate, lambda: number) => c.mean - lambda * c.std;
 
-function shortlist(candidates: Candidate[], lambda: number): Candidate[] {
+/**
+ * Kısa liste: en iyi adaylar + yoğunlaşma sınırı devreye girdiğinde bütçeyi taşıyabilecek "kaçış" adayları:
+ * her maç için o maçı içermeyen en iyiler ve en gözde (en iyi adaylarda en sık geçen) maçların her kombinasyonunu
+ * içermeyen en iyiler. Böylece banko maçlar dolduğunda kalan tutar başka maçlara yönlendirilebilir.
+ */
+function shortlist(candidates: Candidate[], lambda: number, groupCount: number): { list: Candidate[]; diverseStarts: Candidate[] } {
   const picked = new Set<Candidate>();
+  const byScore = [...candidates].sort((a, b) => individualScore(b, lambda) - individualScore(a, lambda));
   const take = (sorted: Candidate[], n: number) => sorted.slice(0, n).forEach((c) => picked.add(c));
-  take([...candidates].sort((a, b) => individualScore(b, lambda) - individualScore(a, lambda)), 40);
+  take(byScore, 40);
   take([...candidates].sort((a, b) => b.mean - a.mean), 10);
   take([...candidates].sort((a, b) => a.probNoReturn - b.probNoReturn || b.mean - a.mean), 10);
-  return Array.from(picked).slice(0, SHORTLIST_SIZE);
+  for (let g = 0; g < groupCount; g++) take(byScore.filter((c) => c.share[g] === 0), 5);
+
+  const frequency = new Array(groupCount).fill(0);
+  byScore.slice(0, 40).forEach((c) => c.groups.forEach((g) => frequency[g]++));
+  const favourites = frequency
+    .map((f, g) => ({ f, g }))
+    .sort((a, b) => b.f - a.f)
+    .slice(0, FAVOURITE_GROUPS)
+    .map((x) => x.g);
+  const diverseStarts: Candidate[] = [];
+  for (let mask = 1; mask < 1 << favourites.length; mask++) {
+    const excluded = favourites.filter((_, i) => mask & (1 << i));
+    const avoiding = byScore.filter((c) => excluded.every((g) => c.share[g] === 0));
+    take(avoiding, 4);
+    if (avoiding[0] && excluded.length === 1) diverseStarts.push(avoiding[0]);
+  }
+  return { list: Array.from(picked).slice(0, SHORTLIST_SIZE), diverseStarts };
 }
 
 /** Adayların havuzun tüm sonuçları üzerinden ortalama ve kovaryans matrisi. */
@@ -171,10 +230,16 @@ function allocate(
   cov: Float64Array[],
   totalUnits: number,
   lambda: number,
+  limits: Limits,
+  groupCount: number,
   start?: number,
 ): State {
   const k = candidates.length;
   const st: State = { w: new Array(k).fill(0), s: new Array(k).fill(0), q: 0, m: 0, active: 0, used: 0 };
+  // Maç başına: o maç yatarsa kaybedilecek birim sayısı ve maçı içeren kupon sayısı.
+  const exposure = new Float64Array(groupCount);
+  const couponsPerMatch = new Int32Array(groupCount);
+  const maxExposureUnits = limits.maxExposure * totalUnits + 1e-9;
   const objective = (m: number, q: number) => m - lambda * Math.sqrt(Math.max(q, 0));
   const apply = (i: number, d: number) => {
     st.q += 2 * d * st.s[i] + d * d * cov[i][i];
@@ -182,12 +247,35 @@ function allocate(
     for (let j = 0; j < k; j++) st.s[j] += d * cov[j][i];
     const before = st.w[i];
     st.w[i] += d;
-    if (before === 0 && st.w[i] > 0) st.active++;
-    else if (before > 0 && st.w[i] === 0) st.active--;
+    const opened = before === 0 && st.w[i] > 0;
+    const closed = before > 0 && st.w[i] === 0;
+    if (opened) st.active++;
+    else if (closed) st.active--;
+    for (const g of candidates[i].groups) {
+      exposure[g] += d * candidates[i].share[g];
+      if (opened) couponsPerMatch[g]++;
+      else if (closed) couponsPerMatch[g]--;
+    }
     st.used += d;
   };
+  /** i'den d birim alıp j'ye eklemek (i = -1: yalnızca ekleme) yoğunlaşma sınırlarını korur mu? */
+  const withinLimits = (i: number, j: number, d: number) => {
+    const ci = i >= 0 ? candidates[i] : null;
+    const cj = candidates[j];
+    const closesI = ci !== null && st.w[i] - d === 0;
+    const opensJ = st.w[j] === 0;
+    for (const g of new Set([...(ci?.groups ?? []), ...cj.groups])) {
+      const e = exposure[g] - (ci ? d * ci.share[g] : 0) + d * cj.share[g];
+      if (e > maxExposureUnits) return false;
+      const c = couponsPerMatch[g] - (closesI && ci!.share[g] > 0 ? 1 : 0) + (opensJ && cj.share[g] > 0 ? 1 : 0);
+      if (c > limits.maxCouponsPerMatch) return false;
+    }
+    return true;
+  };
 
-  if (start !== undefined && candidates[start].minUnits <= totalUnits) apply(start, candidates[start].minUnits);
+  if (start !== undefined && candidates[start].minUnits <= totalUnits && withinLimits(-1, start, candidates[start].minUnits)) {
+    apply(start, candidates[start].minUnits);
+  }
 
   // Açgözlü dağıtım: her adımda birim başına hedefi en çok artıran kupona tutar ekle.
   while (st.used < totalUnits) {
@@ -199,6 +287,7 @@ function allocate(
       const d = st.w[i] > 0 ? 1 : candidates[i].minUnits;
       if (st.used + d > totalUnits) continue;
       if (st.w[i] === 0 && st.active >= MAX_COUPONS) continue;
+      if (!withinLimits(-1, i, d)) continue;
       const gain = (objective(st.m + d * mu[i], st.q + 2 * d * st.s[i] + d * d * cov[i][i]) - f0) / d;
       if (gain > bestGain) {
         bestGain = gain;
@@ -225,6 +314,7 @@ function allocate(
           if (d > st.w[i] || !canHold(i, st.w[i] - d) || !canHold(j, st.w[j] + d)) continue;
           const activeAfter = st.active - (st.w[i] - d === 0 ? 1 : 0) + (st.w[j] === 0 ? 1 : 0);
           if (activeAfter > MAX_COUPONS) continue;
+          if (!withinLimits(i, j, d)) continue;
           const q2 = st.q + 2 * d * (st.s[j] - st.s[i]) + d * d * (cov[i][i] + cov[j][j] - 2 * cov[i][j]);
           const f = objective(st.m + d * (mu[j] - mu[i]), q2);
           if (f > bestF) {
@@ -270,6 +360,7 @@ export function generatePlans(
     stats: null,
     comparisons: [],
     riskProfile,
+    riskLimits: { ...RISK_LIMITS[riskProfile], relaxed: false },
     notes,
     budgetKurus: budgetKurus ?? 0,
     validSelectionCount: 0,
@@ -317,42 +408,68 @@ export function generatePlans(
   if (unusable.length > 0) {
     notes.push(`${unusable.map(describeSelection).join(', ')}: minimum maç sayısı önerilen en büyük kupon boyutundan (5) büyük olduğu için kullanılamadı.`);
   }
-  if (new Set(pool.map(matchKey)).size < pool.length) {
+  if (new Set(pool.map((s) => matchKey(s.matchName))).size < pool.length) {
     notes.push('Aynı maçtan birden fazla seçim var; bunlar aynı kupona konmadı.');
   }
 
   const unit = stakeUnitKurus(budgetKurus);
   const totalUnits = Math.floor(budgetKurus / unit);
-  const normalMinUnits = Math.ceil(MIN_NORMAL_STAKE_KURUS / unit);
-  const allowNormal = budgetKurus >= MIN_NORMAL_STAKE_KURUS;
-  if (!allowNormal) notes.push(`Bütçe ${formatTL(MIN_NORMAL_STAKE_KURUS)} altında olduğu için normal kupon kullanılmadı (yalnızca sistem kuponu).`);
+  if (budgetKurus < MIN_STAKE_KURUS) {
+    notes.push(`Her kupon en az ${formatTL(MIN_STAKE_KURUS)} olmalı; bütçe bu tutarın altında olduğu için öneri oluşturulamadı.`);
+    return base;
+  }
 
   const probs = pool.map((s) => subjectiveProbability(s.confidence));
-  const candidates = generateCandidates(pool, probs, normalMinUnits, allowNormal);
+  const groupKeys = Array.from(new Set(pool.map((s) => matchKey(s.matchName))));
+  const groupOf = pool.map((s) => groupKeys.indexOf(matchKey(s.matchName)));
+  const candidates = generateCandidates(pool, probs, unit, groupOf, groupKeys.length);
   if (candidates.length === 0) {
     notes.push(
-      pool.length < MIN_SYSTEM_SELECTIONS && !allowNormal
-        ? `Sistem kuponu için en az ${MIN_SYSTEM_SELECTIONS} seçim gerekir.`
-        : 'Minimum maç koşulları veya aynı maç kısıtı nedeniyle hiçbir kupon oluşturulamadı.',
+      'Minimum maç koşulları veya aynı maç kısıtı nedeniyle hiçbir kupon oluşturulamadı.',
     );
     notes.push('Girilen seçimler ve bütçeyle geçerli bir öneri bulunamadı.');
     return base;
   }
 
-  const list = shortlist(candidates, lambda);
+  const { list, diverseStarts } = shortlist(candidates, lambda, groupKeys.length);
   const { mu, cov } = moments(list, probs);
   const order = list.map((_, i) => i).sort((a, b) => individualScore(list[b], lambda) - individualScore(list[a], lambda));
-  const starts: (number | undefined)[] = [undefined, ...order.slice(0, START_COUNT)];
+  const starts: (number | undefined)[] = Array.from(
+    new Set([undefined, ...order.slice(0, START_COUNT), ...diverseStarts.map((c) => list.indexOf(c)).filter((i) => i >= 0)]),
+  );
+
+  // Önce risk tercihinin sınırlarıyla dene; bütçe tamamen dağıtılamıyorsa sınırları kademeli gevşet.
+  const baseLimits = RISK_LIMITS[riskProfile];
+  const levels: Limits[] = [baseLimits];
+  while (levels[levels.length - 1].maxExposure < 1 || levels[levels.length - 1].maxCouponsPerMatch < MAX_COUPONS) {
+    const prev = levels[levels.length - 1];
+    levels.push({
+      maxExposure: Math.min(1, Math.round((prev.maxExposure + 0.1) * 100) / 100),
+      maxCouponsPerMatch: Math.min(MAX_COUPONS, prev.maxCouponsPerMatch + 1),
+    });
+  }
   let best: State | null = null;
-  let bestF = Number.NEGATIVE_INFINITY;
-  for (const start of starts) {
-    const st = allocate(list, mu, cov, totalUnits, lambda, start);
-    if (st.active === 0) continue;
-    const f = st.m - lambda * Math.sqrt(Math.max(st.q, 0));
-    if (f > bestF) {
-      bestF = f;
-      best = st;
+  let usedLimits = baseLimits;
+  for (const limits of levels) {
+    let bestF = Number.NEGATIVE_INFINITY;
+    best = null;
+    for (const start of starts) {
+      const st = allocate(list, mu, cov, totalUnits, lambda, limits, groupKeys.length, start);
+      if (st.active === 0 || st.used < totalUnits) continue;
+      const f = st.m - lambda * Math.sqrt(Math.max(st.q, 0));
+      if (f > bestF) {
+        bestF = f;
+        best = st;
+      }
     }
+    usedLimits = limits;
+    if (best) break;
+  }
+  const relaxed = usedLimits !== baseLimits;
+  if (best && relaxed) {
+    notes.push(
+      `Seçimler bu risk tercihinin yoğunlaşma sınırına (maç başına en fazla ${baseLimits.maxCouponsPerMatch} kupon, bütçenin %${Math.round(baseLimits.maxExposure * 100)}'i) yetmedi; sınır maç başına ${usedLimits.maxCouponsPerMatch} kupon ve %${Math.round(usedLimits.maxExposure * 100)} olarak gevşetildi. Daha fazla farklı maç eklersen risk daha iyi dağıtılır.`,
+    );
   }
 
   const buildInput = (strategy: PlanInput['strategy'], label: string, parts: PartInput[], description: string): PlanInput => ({
@@ -387,8 +504,11 @@ export function generatePlans(
   }
 
   let stats = recommended ? evaluatePlan(recommended, pool, riskProfile) : null;
-  // Güvence: kuruş yuvarlaması vb. nedeniyle tek kupon daha iyi çıkarsa onu öner.
+  // Güvence: tek kupon hedefte daha iyiyse VE yoğunlaşma sınırlarına uyuyorsa onu öner.
+  const fitsLimits = (plan: Plan) =>
+    matchExposures(plan, pool).every((e) => e.share <= usedLimits.maxExposure + 0.01 && e.couponCount <= usedLimits.maxCouponsPerMatch);
   for (const cmp of comparisons) {
+    if (!fitsLimits(cmp.plan)) continue;
     if (!stats || cmp.stats.score > stats.score + 1) {
       recommended = {
         ...cmp.plan,
@@ -415,6 +535,7 @@ export function generatePlans(
   const recommendedSignature = planSignature(recommended.input);
   return {
     ...base,
+    riskLimits: { ...usedLimits, relaxed },
     plan: recommended,
     stats,
     comparisons: comparisons.filter((c) => planSignature(c.plan.input) !== recommendedSignature),

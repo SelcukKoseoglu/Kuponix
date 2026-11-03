@@ -3,7 +3,8 @@
  * Float yalnızca ekranda gösterim için kullanılır.
  */
 export const KURUS_PER_TL = 100;
-export const MIN_NORMAL_STAKE_KURUS = 50 * KURUS_PER_TL;
+/** Normal ve sistem, her kupon için en düşük oynama tutarı. */
+export const MIN_STAKE_KURUS = 50 * KURUS_PER_TL;
 
 /**
  * "300", "300,5", "300.50", "1.250,75" gibi girdileri kuruşa çevirir.

@@ -76,19 +76,29 @@ describe('sistem kuponu', () => {
     expect(r.value.unallocatedKurus).toBe(1);
     expect(r.value.stakeKurus + r.value.unallocatedKurus).toBe(r.value.allocatedKurus);
 
-    const r2 = calculateSystemCoupon([sel('a', 2), sel('b', 2), sel('c', 2), sel('d', 2)], 3, TL(10));
-    expect(r2.ok && r2.value.perColumnKurus).toBe(200);
-    const r3 = calculateSystemCoupon([sel('a', 2), sel('b', 2), sel('c', 2), sel('d', 2), sel('e', 2)], 4, TL(10));
-    // 6 kolon: 1000 / 6 = 166.67 → 166 kuruş, toplam 996, 4 kuruş artar
-    expect(r3.ok && r3.value.perColumnKurus).toBe(166);
-    expect(r3.ok && r3.value.stakeKurus).toBe(996);
+    const r2 = calculateSystemCoupon([sel('a', 2), sel('b', 2), sel('c', 2), sel('d', 2)], 3, TL(100));
+    expect(r2.ok && r2.value.perColumnKurus).toBe(2000);
+    const r3 = calculateSystemCoupon([sel('a', 2), sel('b', 2), sel('c', 2), sel('d', 2), sel('e', 2)], 4, TL(100));
+    // 6 kolon: 10000 / 6 = 1666.67 → 1666 kuruş, toplam 9996, 4 kuruş artar
+    expect(r3.ok && r3.value.perColumnKurus).toBe(1666);
+    expect(r3.ok && r3.value.stakeKurus).toBe(9996);
   });
 
-  it('kolon başına tutar 1 kuruşun altına düşerse reddeder; 0/negatif tutarı kabul etmez', () => {
+  it('sistem kuponu da en az 50 TL olmalı; 0/negatif tutarı kabul etmez', () => {
     const four = [sel('a', 2), sel('b', 2), sel('c', 2), sel('d', 2)];
-    expect(calculateSystemCoupon(four, 3, 4).ok).toBe(false);
+    expect(calculateSystemCoupon(four, 3, TL(49.99)).ok).toBe(false);
+    expect(calculateSystemCoupon(four, 3, TL(50)).ok).toBe(true);
     expect(calculateSystemCoupon(four, 3, 0).ok).toBe(false);
     expect(calculateSystemCoupon(four, 3, -100).ok).toBe(false);
+  });
+
+  it('kuruş yuvarlaması oynanan tutarı 50 TL altına düşürürse reddeder', () => {
+    // Sistem 2,3,4,5: 26 kolon; 50 TL / 26 = 1,92 TL → 26 × 1,92 = 49,92 TL < 50 TL
+    const five = [sel('a', 2), sel('b', 2), sel('c', 2), sel('d', 2), sel('e', 2)];
+    const r = calculateSystemCoupon(five, 2, TL(50));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('26 kolon');
+    expect(calculateSystemCoupon(five, 2, TL(50.18)).ok).toBe(true); // 26 × 1,93 = 50,18 TL
   });
 
   it('yalnızca geçerli k/n formatlarını kabul eder', () => {

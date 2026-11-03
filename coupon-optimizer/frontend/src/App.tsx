@@ -12,7 +12,7 @@ import { SavedSlips } from './features/slips/SavedSlips';
 import { formatTL, kurusToInput, parseMoneyToKurus } from './lib/money';
 import { generatePlans } from './lib/optimizer';
 import { createId, loadFromStorage, safeLocalStorage, saveToStorage, snapshotOf, type AppData } from './lib/storage';
-import { validateSelection } from './lib/validation';
+import { splitMatchName, validateSelection } from './lib/validation';
 
 const DEFAULT_BUDGET = '300';
 
@@ -51,6 +51,14 @@ export default function App() {
   }, [selections, validBudget, slips, riskProfile]);
 
   const validCount = useMemo(() => selections.filter((s) => validateSelection(s).length === 0).length, [selections]);
+  const knownTeams = useMemo(
+    () =>
+      selections.flatMap((s) => {
+        const { home, away } = splitMatchName(s.matchName);
+        return [home, away];
+      }),
+    [selections],
+  );
   const usedInSlips = useMemo(() => new Set(slips.flatMap((s) => s.selections.map((x) => x.id))), [slips]);
   const editing = selections.find((s) => s.id === editingId) ?? null;
 
@@ -140,7 +148,7 @@ export default function App() {
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <main className="min-w-0 space-y-6">
-          <SelectionForm editing={editing} onSubmit={handleSubmit} onCancelEdit={() => setEditingId(null)} />
+          <SelectionForm editing={editing} knownTeams={knownTeams} onSubmit={handleSubmit} onCancelEdit={() => setEditingId(null)} />
           <SelectionList
             selections={selections}
             editingId={editingId}

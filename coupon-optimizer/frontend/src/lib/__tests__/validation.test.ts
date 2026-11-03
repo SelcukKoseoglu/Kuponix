@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { EMPTY_DRAFT, validateBudgetKurus, validateConfidence, validateDraft, validateMinMatches, validateOdds } from '../validation';
+import {
+  EMPTY_DRAFT,
+  joinMatchName,
+  matchKey,
+  splitMatchName,
+  validateBudgetKurus,
+  validateConfidence,
+  validateDraft,
+  validateMinMatches,
+  validateOdds,
+} from '../validation';
 import { parseDecimalInput, parseMoneyToKurus } from '../money';
 
 describe('alan validasyonları', () => {
@@ -36,15 +46,38 @@ describe('alan validasyonları', () => {
 
 describe('form taslağı', () => {
   it('virgüllü oranı kabul eder', () => {
-    const r = validateDraft({ ...EMPTY_DRAFT, matchName: 'BJK - CRY', marketSelection: 'İlk Yarı 0', odds: '2,15', minMatches: '2', confidence: '7' });
+    const r = validateDraft({ ...EMPTY_DRAFT, homeTeam: 'BJK', awayTeam: 'CRY', marketSelection: 'İlk Yarı 0', odds: '2,15', minMatches: '2', confidence: '7' });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value).toMatchObject({ odds: 2.15, minMatches: 2, confidence: 7, matchName: 'BJK - CRY' });
   });
 
   it('boş alanları ve geçersiz değerleri reddeder', () => {
-    const r = validateDraft({ ...EMPTY_DRAFT, matchName: ' ', marketSelection: '', odds: 'abc', minMatches: '0', confidence: '12' });
+    const r = validateDraft({ ...EMPTY_DRAFT, homeTeam: ' ', marketSelection: '', odds: 'abc', minMatches: '0', confidence: '12' });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(Object.keys(r.errors).sort()).toEqual(['confidence', 'marketSelection', 'matchName', 'minMatches', 'odds']);
+    if (!r.ok) expect(Object.keys(r.errors).sort()).toEqual(['confidence', 'homeTeam', 'marketSelection', 'minMatches', 'odds']);
+  });
+});
+
+describe('maç adı ve özel seçimler', () => {
+  it('takımları birleştirir ve eski kayıtları ayırır', () => {
+    expect(joinMatchName(' Galatasaray SK ', 'Fenerbahçe SK')).toBe('Galatasaray SK - Fenerbahçe SK');
+    expect(joinMatchName('Derbi', '')).toBe('Derbi');
+    expect(splitMatchName('BJK - CRY')).toEqual({ home: 'BJK', away: 'CRY' });
+    expect(splitMatchName('Paris Saint-Germain - Real Madrid')).toEqual({ home: 'Paris Saint-Germain', away: 'Real Madrid' });
+    expect(splitMatchName('Derbi')).toEqual({ home: 'Derbi', away: '' });
+  });
+
+  it('aynı maçı yazım farklarına rağmen tanır', () => {
+    expect(matchKey('Beşiktaş JK - Galatasaray SK')).toBe(matchKey('besiktas jk  -  GALATASARAY sk'));
+  });
+
+  it('ev sahibi ile deplasman aynı olamaz; oyuncu adı boş bırakılamaz', () => {
+    const base = { ...EMPTY_DRAFT, odds: '2', homeTeam: 'Galatasaray SK', marketSelection: 'MS 1' };
+    const same = validateDraft({ ...base, awayTeam: 'galatasaray sk' });
+    expect(!same.ok && same.errors.awayTeam).toBeTruthy();
+    const player = validateDraft({ ...base, awayTeam: 'Fenerbahçe SK', marketSelection: 'Gol Atar – ' });
+    expect(!player.ok && player.errors.marketSelection).toContain('Oyuncu');
+    expect(validateDraft({ ...base, awayTeam: 'Fenerbahçe SK', marketSelection: 'Gol Atar – Icardi' }).ok).toBe(true);
   });
 });
 

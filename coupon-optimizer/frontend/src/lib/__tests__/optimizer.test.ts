@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_COUPONS, PORTFOLIO_POOL_LIMIT, generatePlans, stakeUnitKurus } from '../optimizer';
 import { buildPlan } from '../plan';
-import { MIN_NORMAL_STAKE_KURUS } from '../money';
+import { MIN_STAKE_KURUS } from '../money';
+import { RISK_LIMITS } from '../probability';
+import { matchExposures } from '../risk';
 import type { MatchSelection, Plan } from '../../types';
 import { sel, TL } from './fixtures';
 
@@ -21,8 +23,8 @@ function assertPlanInvariants(plan: Plan, budget: number, selections = sample) {
   for (const part of plan.parts) {
     const items = part.selectionIds.map((id) => selections.find((s) => s.id === id)!);
     expect(new Set(items.map((s) => s.matchName)).size).toBe(items.length);
+    expect(part.stakeKurus).toBeGreaterThanOrEqual(MIN_STAKE_KURUS);
     if (part.kind === 'normal') {
-      expect(part.stakeKurus).toBeGreaterThanOrEqual(MIN_NORMAL_STAKE_KURUS);
       items.forEach((s) => expect(s.minMatches).toBeLessThanOrEqual(items.length));
     } else {
       expect(part.perColumnKurus).toBeGreaterThan(0);
@@ -59,11 +61,40 @@ describe('generatePlans — tek önerilen kupon seti', () => {
     expect(aggressive.stats!.expectedReturnKurus).toBeGreaterThanOrEqual(cautious.stats!.expectedReturnKurus);
   });
 
-  it('öneri, hedef puanında tek kupon karşılaştırmalarından geri kalmaz', () => {
-    for (const risk of ['cautious', 'balanced', 'aggressive'] as const) {
+  it('maksimum kâr tercihinde öneri, tek kupon karşılaştırmalarından geri kalmaz', () => {
+    const result = generatePlans(sample, TL(300), 'aggressive');
+    for (const c of result.comparisons) expect(result.stats!.score).toBeGreaterThanOrEqual(c.stats.score - TL(1));
+  });
+
+  it('temkinli ve dengeli tercihlerde maç başına yoğunlaşma sınırına uyar', () => {
+    for (const risk of ['cautious', 'balanced'] as const) {
       const result = generatePlans(sample, TL(300), risk);
-      for (const c of result.comparisons) expect(result.stats!.score).toBeGreaterThanOrEqual(c.stats.score - TL(1));
+      const limits = RISK_LIMITS[risk];
+      expect(result.riskLimits.relaxed).toBe(false);
+      for (const e of matchExposures(result.plan!, sample)) {
+        expect(e.couponCount).toBeLessThanOrEqual(limits.maxCouponsPerMatch);
+        expect(e.share).toBeLessThanOrEqual(limits.maxExposure + 0.01);
+      }
     }
+  });
+
+  it('güven puanı çok yüksek tek maç temkinli öneride tüm kuponlara girmez', () => {
+    const withBanker = [...sample, sel('banko', 1.35, 10)];
+    const result = generatePlans(withBanker, TL(300), 'cautious');
+    const banker = matchExposures(result.plan!, withBanker).find((e) => e.selectionIds.includes('banko'));
+    if (banker) {
+      expect(banker.couponCount).toBeLessThanOrEqual(2);
+      expect(banker.share).toBeLessThanOrEqual(0.51);
+    }
+    expect(result.plan!.parts.length).toBeGreaterThan(1);
+  });
+
+  it('seçim az olduğunda sınırı gevşetir ve bunu bildirir', () => {
+    // İki seçim de en az 2 maçlı kupon istiyor: tek mümkün kupon ikili normal kupon (maç başına %100).
+    const result = generatePlans([sel('x', 2, 7, 2), sel('y', 1.8, 8, 2)], TL(300), 'cautious');
+    expect(result.plan).not.toBeNull();
+    expect(result.riskLimits.relaxed).toBe(true);
+    expect(result.notes.join(' ')).toContain('gevşetildi');
   });
 
   it('sonucu işaretlenmiş maçları yeni öneriye almaz', () => {
@@ -80,12 +111,20 @@ describe('generatePlans — tek önerilen kupon seti', () => {
     assertPlanInvariants(result.plan!, TL(300), sameMatch);
   });
 
-  it('bütçe 50 TL altındaysa normal kupon kullanmaz', () => {
+  it('bütçe 50 TL altındaysa öneri üretmez (her kupon en az 50 TL)', () => {
     const result = generatePlans(sample, TL(40));
-    expect(result.plan).not.toBeNull();
-    expect(result.plan!.parts.every((p) => p.kind === 'system')).toBe(true);
-    expect(result.notes.join(' ')).toContain('normal kupon');
-    assertPlanInvariants(result.plan!, TL(40));
+    expect(result.plan).toBeNull();
+    expect(result.notes.join(' ')).toContain('en az');
+  });
+
+  it('küçük bütçede de her kupon en az 50 TL olur', () => {
+    for (const budget of [TL(50), TL(120), TL(175)]) {
+      for (const risk of ['cautious', 'balanced', 'aggressive'] as const) {
+        const result = generatePlans(sample, budget, risk);
+        expect(result.plan).not.toBeNull();
+        assertPlanInvariants(result.plan!, budget);
+      }
+    }
   });
 
   it('min. maç sayısı 2 olan tek seçimle öneri üretmez', () => {

@@ -1,14 +1,18 @@
 import type { MatchSelection, SelectionResult } from '../types';
 import { parseDecimalInput, parseIntegerInput } from './money';
+import { normalizeSearch } from './search';
 
 export const MAX_ODDS = 1000;
 export const MAX_MIN_MATCHES = 30;
-export const MAX_TEXT_LENGTH = 80;
+export const MAX_TEXT_LENGTH = 120;
+export const MAX_TEAM_LENGTH = 50;
+export const MATCH_SEPARATOR = ' - ';
 export const MAX_NOTE_LENGTH = 300;
 export const SELECTION_RESULTS: readonly SelectionResult[] = ['pending', 'won', 'lost', 'void'];
 
 export type SelectionDraft = {
-  matchName: string;
+  homeTeam: string;
+  awayTeam: string;
   marketSelection: string;
   odds: string;
   minMatches: string;
@@ -19,7 +23,8 @@ export type SelectionDraft = {
 export type DraftErrors = Partial<Record<keyof SelectionDraft, string>>;
 
 export const EMPTY_DRAFT: SelectionDraft = {
-  matchName: '',
+  homeTeam: '',
+  awayTeam: '',
   marketSelection: '',
   odds: '',
   minMatches: '1',
@@ -64,10 +69,15 @@ export function validateDraft(
 ): { ok: true; value: Omit<MatchSelection, 'id'> } | { ok: false; errors: DraftErrors } {
   const errors: DraftErrors = {};
 
-  const matchErr = validateText(draft.matchName, 'Maç adı', MAX_TEXT_LENGTH);
-  if (matchErr) errors.matchName = matchErr;
+  const homeErr = validateText(draft.homeTeam, 'Ev sahibi takım', MAX_TEAM_LENGTH);
+  if (homeErr) errors.homeTeam = homeErr;
+  if (draft.awayTeam.trim().length > MAX_TEAM_LENGTH) errors.awayTeam = `Deplasman takımı en fazla ${MAX_TEAM_LENGTH} karakter olabilir.`;
+  else if (draft.awayTeam.trim() && normalizeSearch(draft.awayTeam) === normalizeSearch(draft.homeTeam)) {
+    errors.awayTeam = 'Ev sahibi ve deplasman aynı takım olamaz.';
+  }
   const marketErr = validateText(draft.marketSelection, 'Bahis seçimi', MAX_TEXT_LENGTH);
   if (marketErr) errors.marketSelection = marketErr;
+  else if (/–$/.test(draft.marketSelection.trim())) errors.marketSelection = 'Oyuncu adını seçimin sonuna yazın (ör. "Gol Atar – Icardi").';
 
   const odds = parseDecimalInput(draft.odds);
   const oddsErr = odds === null ? 'Oran sayısal olmalı (ör. 2,15).' : validateOdds(odds);
@@ -89,7 +99,7 @@ export function validateDraft(
   return {
     ok: true,
     value: {
-      matchName: draft.matchName.trim(),
+      matchName: joinMatchName(draft.homeTeam, draft.awayTeam),
       marketSelection: draft.marketSelection.trim(),
       odds: Math.round(odds! * 100) / 100,
       minMatches: minMatches!,
@@ -130,4 +140,23 @@ export function validateSelection(selection: MatchSelection): string[] {
 
 export function describeSelection(s: Pick<MatchSelection, 'matchName' | 'marketSelection'>): string {
   return `${s.matchName} (${s.marketSelection})`;
+}
+
+/** "Ev - Deplasman" biçiminde maç adı. Deplasman boşsa yalnızca ev sahibi adı kullanılır. */
+export function joinMatchName(home: string, away: string): string {
+  const h = home.trim().replace(/\s+/g, ' ');
+  const a = away.trim().replace(/\s+/g, ' ');
+  return a ? `${h}${MATCH_SEPARATOR}${a}` : h;
+}
+
+/** Maç adını takımlara ayırır ("BJK - CRY" → BJK, CRY). Ayraç yoksa tamamı ev sahibi sayılır. */
+export function splitMatchName(matchName: string): { home: string; away: string } {
+  const i = matchName.indexOf(MATCH_SEPARATOR);
+  if (i < 0) return { home: matchName.trim(), away: '' };
+  return { home: matchName.slice(0, i).trim(), away: matchName.slice(i + MATCH_SEPARATOR.length).trim() };
+}
+
+/** Aynı maçı tanımak için anahtar (büyük/küçük harf, Türkçe karakter ve boşluk farkları yok sayılır). */
+export function matchKey(matchName: string): string {
+  return normalizeSearch(matchName);
 }

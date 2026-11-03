@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import type { MatchSelection, PartInput, Plan } from '../../types';
 import { buildPlan } from '../../lib/plan';
-import { MIN_NORMAL_STAKE_KURUS, formatNumber, formatOdds, formatTL, kurusToInput, parseMoneyToKurus } from '../../lib/money';
+import { MIN_STAKE_KURUS, formatNumber, formatOdds, formatTL, kurusToInput, parseMoneyToKurus } from '../../lib/money';
 
 type Props = {
   plan: Plan;
@@ -26,7 +26,7 @@ export function PlanDetails({ plan, selectionsById, onUpdate }: Props) {
           <p className="mt-1 text-slate-400">
             1–4 maçlık normal kuponlar ve 3–5 maçlık tüm geçerli sistem kuponları aday olarak üretildi. Her maçın tutma ihtimali senin
             güven puanından alındı (7/10 → %70). Bütçe {formatTL(plan.budgetKurus)} küçük birimlere bölünüp “beklenen dönüş − risk ×
-            dalgalanma” hedefini en çok artıran kuponlara dağıtıldı (en fazla 4 kupon, normal kupon en az 50 TL). Aynı maçı paylaşan
+            dalgalanma” hedefini en çok artıran kuponlara dağıtıldı (en fazla 4 kupon, her kupon en az 50 TL). Aynı maçı paylaşan
             kuponların birlikte kazanıp kaybettiği hesaba katıldı.
           </p>
           <p className="mt-1 text-slate-400">
@@ -116,7 +116,7 @@ function StakeEditor({ plan, selections, onUpdate }: { plan: Plan; selections: M
     <form onSubmit={handleSubmit} className="rounded-lg border border-slate-800 p-3">
       <h5 className="font-semibold text-slate-200">Tutarları düzenle</h5>
       <p className="mt-1 text-xs text-slate-400">
-        Bütçe: {formatTL(plan.budgetKurus)}. Normal kupon en az {formatTL(MIN_NORMAL_STAKE_KURUS)}; sistem tutarı geçerli kolonlara
+        Bütçe: {formatTL(plan.budgetKurus)}. Her kupon (normal ve sistem) en az {formatTL(MIN_STAKE_KURUS)}; sistem tutarı geçerli kolonlara
         bölünür ve kolon başına tutar kuruşa aşağı yuvarlanır.
       </p>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">

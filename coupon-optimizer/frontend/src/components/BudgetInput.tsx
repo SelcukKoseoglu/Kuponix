@@ -1,5 +1,5 @@
 import { validateBudgetKurus } from '../lib/validation';
-import { MIN_NORMAL_STAKE_KURUS, formatTL, parseMoneyToKurus } from '../lib/money';
+import { MIN_STAKE_KURUS, formatTL, parseMoneyToKurus } from '../lib/money';
 
 type Props = {
   value: string;
@@ -31,7 +31,7 @@ export function BudgetInput({ value, onChange }: Props) {
         <p className="field-error">{error}</p>
       ) : (
         <p id="budget-help" className="mt-1 text-xs text-slate-400">
-          {formatTL(kurus!)} · Normal kupon için en az {formatTL(MIN_NORMAL_STAKE_KURUS)} gerekir.
+          {formatTL(kurus!)} · Her kupon en az {formatTL(MIN_STAKE_KURUS)} olmalı.
         </p>
       )}
     </section>

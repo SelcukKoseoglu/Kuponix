@@ -1,6 +1,6 @@
 import type { ExcludedColumn, LossScenario, MatchSelection, NormalCoupon, SystemColumn, SystemCoupon } from '../types';
 import { combinations, systemColumnCount } from './combinatorics';
-import { MIN_NORMAL_STAKE_KURUS, formatTL } from './money';
+import { MIN_STAKE_KURUS, formatTL } from './money';
 import { describeSelection } from './validation';
 
 export const MIN_SYSTEM_SELECTIONS = 3;
@@ -42,8 +42,8 @@ export function systemLabel(minSize: number, n: number): string {
 export function calculateNormalCoupon(selections: readonly MatchSelection[], stakeKurus: number): CalcResult<NormalCoupon> {
   const n = selections.length;
   if (n === 0) return fail('Normal kupon için en az bir seçim gerekir.');
-  if (!Number.isInteger(stakeKurus) || stakeKurus < MIN_NORMAL_STAKE_KURUS) {
-    return fail(`Normal kupon tutarı en az ${formatTL(MIN_NORMAL_STAKE_KURUS)} olmalı.`);
+  if (!Number.isInteger(stakeKurus) || stakeKurus < MIN_STAKE_KURUS) {
+    return fail(`Normal kupon tutarı en az ${formatTL(MIN_STAKE_KURUS)} olmalı.`);
   }
   const blockers = selections.filter((s) => s.minMatches > n);
   if (blockers.length > 0) {
@@ -80,7 +80,9 @@ export function calculateSystemCoupon(
   if (!Number.isInteger(minSize) || minSize < 2 || minSize >= n) {
     return fail(`Geçersiz sistem formatı: ${n} seçim için en küçük kombinasyon 2 ile ${n - 1} arasında olmalı.`);
   }
-  if (!Number.isInteger(allocatedKurus) || allocatedKurus <= 0) return fail("Sistem kuponu tutarı 0'dan büyük olmalı.");
+  if (!Number.isInteger(allocatedKurus) || allocatedKurus < MIN_STAKE_KURUS) {
+    return fail(`Sistem kuponu tutarı en az ${formatTL(MIN_STAKE_KURUS)} olmalı.`);
+  }
 
   const indices = selections.map((_, i) => i);
   const validMasks: number[] = [];
@@ -117,6 +119,11 @@ export function calculateSystemCoupon(
   });
 
   const stakeKurus = perColumnKurus * columns.length;
+  if (stakeKurus < MIN_STAKE_KURUS) {
+    return fail(
+      `Sistem kuponunda oynanan tutar en az ${formatTL(MIN_STAKE_KURUS)} olmalı; ${columns.length} kolon × ${formatTL(perColumnKurus)} = ${formatTL(stakeKurus)}. Tutarı biraz artırın.`,
+    );
+  }
   return {
     ok: true,
     value: {

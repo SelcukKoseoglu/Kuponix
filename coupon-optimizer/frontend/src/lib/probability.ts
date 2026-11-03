@@ -16,9 +16,25 @@ export const RISK_LAMBDA: Record<RiskProfile, number> = {
   aggressive: 0,
 };
 
+/**
+ * Maç başına yoğunlaşma sınırları. Güven puanı ne kadar yüksek olursa olsun tek bir maç yatarsa
+ * bütçenin en fazla `maxExposure` kadarı kaybedilebilir ve bir maç en fazla `maxCouponsPerMatch` kupona girer.
+ */
+export const RISK_LIMITS: Record<RiskProfile, { maxExposure: number; maxCouponsPerMatch: number }> = {
+  cautious: { maxExposure: 0.5, maxCouponsPerMatch: 2 },
+  balanced: { maxExposure: 0.75, maxCouponsPerMatch: 3 },
+  aggressive: { maxExposure: 1, maxCouponsPerMatch: 4 },
+};
+
 export const RISK_LABELS: Record<RiskProfile, { title: string; description: string }> = {
-  cautious: { title: 'Temkinli', description: 'Hiç dönüş alamama ihtimalini azaltmaya öncelik verir; bütçeyi daha çok kupona yayar.' },
-  balanced: { title: 'Dengeli', description: 'Beklenen kâr ile risk arasında denge kurar.' },
+  cautious: {
+    title: 'Temkinli',
+    description: 'Bütçeyi farklı maçlara yayar: bir maç en fazla 2 kupona girer, tek maç yatarsa bütçenin en fazla %50’si yanar.',
+  },
+  balanced: {
+    title: 'Dengeli',
+    description: 'Beklenen kâr ile risk arasında denge kurar: bir maç en fazla 3 kupona girer, tek maç bütçenin en fazla %75’ini etkiler.',
+  },
   aggressive: {
     title: 'Maksimum beklenen kâr',
     description: 'Yalnızca beklenen dönüşe bakar; genellikle bütçenin tamamını tek kupona koyar ve riski en yüksektir.',
