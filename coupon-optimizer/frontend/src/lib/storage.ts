@@ -1,32 +1,38 @@
-import type { MatchSelection, PartInput, RiskProfile, SavedSlip, SelectionSnapshot } from '../types';
-import { SELECTION_RESULTS, validateSelection } from './validation';
+import type { AnalysisSettings, JointProbability, MatchSelection, PartInput, RiskProfile, SavedSlip, SelectionSnapshot } from '../types';
+import { DEFAULT_SETTINGS } from '../engine/config';
+import { SELECTION_RESULTS, matchIdFromName, validateSelection } from './validation';
 
-/** Anahtar değişmez: sürüm 1 ile kaydedilmiş veriler aynen okunur ve sürüm 2'ye taşınır. */
+/**
+ * Anahtar değişmez: sürüm 1 ve 2 ile kaydedilmiş veriler aynen okunur ve sürüm 3'e taşınır
+ * (maç kimliği maç adından türetilir, eski sistem formatı "k'dan n'e" boyut listesine çevrilir).
+ */
 export const STORAGE_KEY = 'kupon-planlayici:v1';
 export const BACKUP_KEY_PREFIX = 'kupon-planlayici:yedek:';
-export const DATA_VERSION = 2;
-const SUPPORTED_VERSIONS = [1, 2];
+export const DATA_VERSION = 3;
+const SUPPORTED_VERSIONS = [1, 2, 3];
 const RISK_PROFILES: readonly RiskProfile[] = ['cautious', 'balanced', 'aggressive'];
 
 export type AppData = {
   budgetKurus: number | null;
   selections: MatchSelection[];
   slips: SavedSlip[];
-  riskProfile: RiskProfile;
+  settings: AnalysisSettings;
+  joints: JointProbability[];
 };
 
-type ExportedData = AppData & { app: 'kupon-planlayici'; version: number; exportedAt: string };
+type ExportedData = AppData & { app: 'kuponix'; version: number; exportedAt: string };
 
 export type ParseResult = { ok: true; data: AppData } | { ok: false; error: string };
 
 export function serializeData(data: AppData, now = new Date()): string {
   const payload: ExportedData = {
-    app: 'kupon-planlayici',
+    app: 'kuponix',
     version: DATA_VERSION,
     exportedAt: now.toISOString(),
     budgetKurus: data.budgetKurus,
-    riskProfile: data.riskProfile,
+    settings: data.settings,
     selections: data.selections,
+    joints: data.joints,
     slips: data.slips,
   };
   return JSON.stringify(payload, null, 2);
@@ -37,22 +43,27 @@ const isPositiveInt = (v: unknown): v is number => Number.isSafeInteger(v) && (v
 
 function parseSelection(item: unknown, label: string): { ok: true; value: MatchSelection } | { ok: false; error: string } {
   if (!isObject(item)) return { ok: false, error: `${label} bir nesne olmalı.` };
-  const selection: MatchSelection = {
-    id: item.id as string,
-    matchName: item.matchName as string,
-    marketSelection: item.marketSelection as string,
-    odds: item.odds as number,
-    minMatches: item.minMatches as number,
-    confidence: item.confidence as number,
-    ...(item.note !== undefined && item.note !== '' ? { note: item.note as string } : {}),
-    ...(item.result !== undefined && item.result !== 'pending' ? { result: item.result as MatchSelection['result'] } : {}),
-  };
-  if (typeof selection.matchName !== 'string' || typeof selection.marketSelection !== 'string') {
+  if (typeof item.matchName !== 'string' || typeof item.marketSelection !== 'string') {
     return { ok: false, error: `${label}: maç adı ve bahis seçimi metin olmalı.` };
   }
   if (item.result !== undefined && !SELECTION_RESULTS.includes(item.result as never)) {
     return { ok: false, error: `${label}: maç sonucu geçersiz.` };
   }
+  const selection: MatchSelection = {
+    id: item.id as string,
+    matchId: typeof item.matchId === 'string' && item.matchId.trim() ? item.matchId : matchIdFromName(item.matchName),
+    matchName: item.matchName,
+    marketSelection: item.marketSelection,
+    odds: item.odds as number,
+    minMatches: item.minMatches as number,
+    confidence: item.confidence as number,
+    ...(item.estimatedProbability !== undefined && item.estimatedProbability !== null
+      ? { estimatedProbability: item.estimatedProbability as number }
+      : {}),
+    ...(typeof item.correlationGroup === 'string' && item.correlationGroup ? { correlationGroup: item.correlationGroup } : {}),
+    ...(item.note !== undefined && item.note !== '' ? { note: item.note as string } : {}),
+    ...(item.result !== undefined && item.result !== 'pending' ? { result: item.result as MatchSelection['result'] } : {}),
+  };
   const errors = validateSelection(selection);
   if (errors.length > 0) return { ok: false, error: `${label}: ${errors[0]}` };
   return { ok: true, value: selection };
@@ -64,8 +75,15 @@ function parsePart(item: unknown, snapshotIds: Set<string>): PartInput | null {
   if (ids.length === 0 || !ids.every((id) => typeof id === 'string' && snapshotIds.has(id))) return null;
   const selectionIds = ids as string[];
   if (item.kind === 'normal' && isPositiveInt(item.stakeKurus)) return { kind: 'normal', selectionIds, stakeKurus: item.stakeKurus };
-  if (item.kind === 'system' && isPositiveInt(item.allocatedKurus) && isPositiveInt(item.minSize)) {
-    return { kind: 'system', selectionIds, minSize: item.minSize, allocatedKurus: item.allocatedKurus };
+  if (item.kind === 'system' && isPositiveInt(item.allocatedKurus)) {
+    if (Array.isArray(item.sizes) && item.sizes.length > 0 && item.sizes.every(isPositiveInt)) {
+      return { kind: 'system', selectionIds, sizes: item.sizes as number[], allocatedKurus: item.allocatedKurus };
+    }
+    // Sürüm 1–2: "Sistem k..n" yalnızca en küçük boyutla saklanıyordu.
+    if (isPositiveInt(item.minSize) && item.minSize <= selectionIds.length) {
+      const sizes = Array.from({ length: selectionIds.length - item.minSize + 1 }, (_, i) => (item.minSize as number) + i);
+      return { kind: 'system', selectionIds, sizes, allocatedKurus: item.allocatedKurus };
+    }
   }
   return null;
 }
@@ -83,8 +101,7 @@ function parseSlip(item: unknown, index: number): { ok: true; value: SavedSlip }
   for (let i = 0; i < item.selections.length; i++) {
     const r = parseSelection(item.selections[i], `${label}, ${i + 1}. seçim`);
     if (!r.ok) return r;
-    const { id, matchName, marketSelection, odds, minMatches, confidence } = r.value;
-    selections.push({ id, matchName, marketSelection, odds, minMatches, confidence });
+    selections.push(snapshotOf(r.value));
   }
   const ids = new Set(selections.map((s) => s.id));
   const parts: PartInput[] = [];
@@ -97,7 +114,36 @@ function parseSlip(item: unknown, index: number): { ok: true; value: SavedSlip }
   return { ok: true, value: { id: item.id, createdAt: item.createdAt, budgetKurus: item.budgetKurus, riskProfile, parts, selections } };
 }
 
-/** JSON metnini şema doğrulamasıyla okur. Sürüm 1 (sonuç ve kayıtlı kupon içermeyen) dosyalar da kabul edilir. */
+const optionalPositiveInt = (v: unknown): number | null => (isPositiveInt(v) ? v : null);
+const optionalPercent = (v: unknown): number | null => (typeof v === 'number' && v > 0 && v <= 100 ? v : null);
+
+/** Ayarları okur; eksik/geçersiz alanlar varsayılana döner (ayarlar yüzünden veri kaybı yaşanmaz). */
+function parseSettings(raw: unknown, legacyRisk: unknown): AnalysisSettings {
+  const s = isObject(raw) ? raw : {};
+  const preferred = RISK_PROFILES.includes(s.preferredStrategy as RiskProfile)
+    ? (s.preferredStrategy as RiskProfile)
+    : RISK_PROFILES.includes(legacyRisk as RiskProfile)
+      ? (legacyRisk as RiskProfile)
+      : null;
+  return {
+    allowNormal: typeof s.allowNormal === 'boolean' ? s.allowNormal : DEFAULT_SETTINGS.allowNormal,
+    allowSystem: typeof s.allowSystem === 'boolean' ? s.allowSystem : DEFAULT_SETTINGS.allowSystem,
+    maxLossKurus: optionalPositiveInt(s.maxLossKurus),
+    maxSelectionExposurePct: optionalPercent(s.maxSelectionExposurePct),
+    maxMatchExposurePct: optionalPercent(s.maxMatchExposurePct),
+    minColumnStakeKurus: optionalPositiveInt(s.minColumnStakeKurus),
+    maxColumnStakeKurus: optionalPositiveInt(s.maxColumnStakeKurus),
+    minSystemStakeKurus: optionalPositiveInt(s.minSystemStakeKurus) ?? DEFAULT_SETTINGS.minSystemStakeKurus,
+    simulationCount:
+      Number.isSafeInteger(s.simulationCount) && (s.simulationCount as number) >= 1000 && (s.simulationCount as number) <= 200_000
+        ? (s.simulationCount as number)
+        : DEFAULT_SETTINGS.simulationCount,
+    seed: Number.isSafeInteger(s.seed) ? (s.seed as number) : DEFAULT_SETTINGS.seed,
+    preferredStrategy: preferred,
+  };
+}
+
+/** JSON metnini şema doğrulamasıyla okur. Sürüm 1–2 dosyaları da kabul edilir ve taşınır. */
 export function parseData(json: string): ParseResult {
   let raw: unknown;
   try {
@@ -134,8 +180,33 @@ export function parseData(json: string): ParseResult {
     slips.push(r.value);
   }
 
-  const riskProfile = RISK_PROFILES.includes(raw.riskProfile as RiskProfile) ? (raw.riskProfile as RiskProfile) : 'balanced';
-  return { ok: true, data: { budgetKurus: (budget as number | null | undefined) ?? null, selections, slips, riskProfile } };
+  if (raw.joints !== undefined && !Array.isArray(raw.joints)) return { ok: false, error: '"joints" alanı bir liste olmalı.' };
+  const joints: JointProbability[] = [];
+  for (const item of (raw.joints as unknown[] | undefined) ?? []) {
+    if (
+      !isObject(item) ||
+      !Array.isArray(item.selectionIds) ||
+      item.selectionIds.length !== 2 ||
+      !item.selectionIds.every((id) => typeof id === 'string' && ids.has(id)) ||
+      typeof item.probability !== 'number' ||
+      item.probability < 0 ||
+      item.probability > 1
+    ) {
+      return { ok: false, error: 'Ortak olasılık kaydı geçersiz (iki mevcut seçim ve 0–1 arası olasılık gerekir).' };
+    }
+    joints.push({ selectionIds: [item.selectionIds[0] as string, item.selectionIds[1] as string], probability: item.probability });
+  }
+
+  return {
+    ok: true,
+    data: {
+      budgetKurus: (budget as number | null | undefined) ?? null,
+      selections,
+      slips,
+      settings: parseSettings(raw.settings, raw.riskProfile),
+      joints,
+    },
+  };
 }
 
 /**
@@ -179,6 +250,6 @@ export function createId(): string {
 }
 
 export function snapshotOf(s: MatchSelection): SelectionSnapshot {
-  const { id, matchName, marketSelection, odds, minMatches, confidence } = s;
-  return { id, matchName, marketSelection, odds, minMatches, confidence };
+  const { id, matchId, matchName, marketSelection, odds, minMatches, confidence } = s;
+  return { id, matchId, matchName, marketSelection, odds, minMatches, confidence };
 }

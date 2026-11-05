@@ -11,24 +11,34 @@ export const MAX_NOTE_LENGTH = 300;
 export const SELECTION_RESULTS: readonly SelectionResult[] = ['pending', 'won', 'lost', 'void'];
 
 export type SelectionDraft = {
+  /** Mevcut bir maça seçim ekleniyorsa o maçın kimliği; yeni maç için boş. */
+  matchId: string;
   homeTeam: string;
   awayTeam: string;
   marketSelection: string;
   odds: string;
   minMatches: string;
   confidence: string;
+  /** Yüzde olarak tahmini olasılık ("55", "55,5", "%55"); boş bırakılabilir. */
+  estimatedProbability: string;
+  correlationGroup: string;
   note: string;
 };
+
+export const MAX_GROUP_LENGTH = 40;
 
 export type DraftErrors = Partial<Record<keyof SelectionDraft, string>>;
 
 export const EMPTY_DRAFT: SelectionDraft = {
+  matchId: '',
   homeTeam: '',
   awayTeam: '',
   marketSelection: '',
   odds: '',
   minMatches: '1',
   confidence: '5',
+  estimatedProbability: '',
+  correlationGroup: '',
   note: '',
 };
 
@@ -51,6 +61,20 @@ export function validateMinMatches(value: number): string | null {
   return null;
 }
 
+/** Tahmini olasılık 0 ile 1 arasında olmalı; %0 ve %100 (kesinlik) kabul edilmez. */
+export function validateEstimatedProbability(value: number): string | null {
+  if (!Number.isFinite(value) || value <= 0 || value >= 1) return 'Tahmini olasılık %0 ile %100 arasında olmalı (uçlar hariç).';
+  return null;
+}
+
+/** "55", "55,5", "%55" → 0.55; boşsa undefined; geçersizse null. */
+export function parsePercentInput(input: string): number | undefined | null {
+  const trimmed = input.trim().replace(/^%/, '').replace(/%$/, '').trim();
+  if (!trimmed) return undefined;
+  const value = parseDecimalInput(trimmed);
+  return value === null ? null : Math.round(value * 100) / 10000;
+}
+
 export function validateBudgetKurus(value: number | null): string | null {
   if (value === null) return 'Bütçe geçerli bir tutar olmalı (ör. 300 veya 250,50).';
   if (value <= 0) return "Bütçe 0'dan büyük olmalı.";
@@ -66,7 +90,7 @@ function validateText(value: string, label: string, max: number): string | null 
 /** Formdan gelen metin girdilerini doğrular ve seçim değerine dönüştürür. */
 export function validateDraft(
   draft: SelectionDraft,
-): { ok: true; value: Omit<MatchSelection, 'id'> } | { ok: false; errors: DraftErrors } {
+): { ok: true; value: Omit<MatchSelection, 'id' | 'matchId'> } | { ok: false; errors: DraftErrors } {
   const errors: DraftErrors = {};
 
   const homeErr = validateText(draft.homeTeam, 'Ev sahibi takım', MAX_TEAM_LENGTH);
@@ -91,11 +115,22 @@ export function validateDraft(
   const confErr = confidence === null ? 'Güven puanı 1 ile 10 arasında bir tam sayı olmalı.' : validateConfidence(confidence);
   if (confErr) errors.confidence = confErr;
 
+  const probability = parsePercentInput(draft.estimatedProbability);
+  if (probability === null) errors.estimatedProbability = 'Tahmini olasılık yüzde olarak yazılmalı (ör. 55 veya 55,5).';
+  else if (probability !== undefined) {
+    const pErr = validateEstimatedProbability(probability);
+    if (pErr) errors.estimatedProbability = pErr;
+  }
+
+  if (draft.correlationGroup.trim().length > MAX_GROUP_LENGTH) {
+    errors.correlationGroup = `Korelasyon grubu en fazla ${MAX_GROUP_LENGTH} karakter olabilir.`;
+  }
   if (draft.note.trim().length > MAX_NOTE_LENGTH) errors.note = `Not en fazla ${MAX_NOTE_LENGTH} karakter olabilir.`;
 
   if (Object.keys(errors).length > 0) return { ok: false, errors };
 
   const note = draft.note.trim();
+  const group = draft.correlationGroup.trim();
   return {
     ok: true,
     value: {
@@ -104,6 +139,8 @@ export function validateDraft(
       odds: Math.round(odds! * 100) / 100,
       minMatches: minMatches!,
       confidence: confidence!,
+      ...(probability !== undefined && probability !== null ? { estimatedProbability: probability } : {}),
+      ...(group ? { correlationGroup: group } : {}),
       ...(note ? { note } : {}),
     },
   };
@@ -113,6 +150,7 @@ export function validateDraft(
 export function validateSelection(selection: MatchSelection): string[] {
   const errors: string[] = [];
   if (typeof selection.id !== 'string' || !selection.id.trim()) errors.push('Seçim kimliği (id) boş olamaz.');
+  if (typeof selection.matchId !== 'string' || !selection.matchId.trim()) errors.push('Maç kimliği (matchId) boş olamaz.');
   const matchErr = validateText(String(selection.matchName ?? ''), 'Maç adı', MAX_TEXT_LENGTH);
   if (matchErr) errors.push(matchErr);
   const marketErr = validateText(String(selection.marketSelection ?? ''), 'Bahis seçimi', MAX_TEXT_LENGTH);
@@ -131,6 +169,19 @@ export function validateSelection(selection: MatchSelection): string[] {
   if (confErr) errors.push(confErr);
   if (selection.note !== undefined && (typeof selection.note !== 'string' || selection.note.length > MAX_NOTE_LENGTH)) {
     errors.push(`Not en fazla ${MAX_NOTE_LENGTH} karakterlik bir metin olmalı.`);
+  }
+  if (selection.estimatedProbability !== undefined) {
+    const pErr =
+      typeof selection.estimatedProbability === 'number'
+        ? validateEstimatedProbability(selection.estimatedProbability)
+        : 'Tahmini olasılık sayısal olmalı.';
+    if (pErr) errors.push(pErr);
+  }
+  if (
+    selection.correlationGroup !== undefined &&
+    (typeof selection.correlationGroup !== 'string' || selection.correlationGroup.length > MAX_GROUP_LENGTH)
+  ) {
+    errors.push(`Korelasyon grubu en fazla ${MAX_GROUP_LENGTH} karakterlik bir metin olmalı.`);
   }
   if (selection.result !== undefined && !SELECTION_RESULTS.includes(selection.result)) {
     errors.push('Maç sonucu "pending", "won", "lost" veya "void" olmalı.');
@@ -159,4 +210,12 @@ export function splitMatchName(matchName: string): { home: string; away: string 
 /** Aynı maçı tanımak için anahtar (büyük/küçük harf, Türkçe karakter ve boşluk farkları yok sayılır). */
 export function matchKey(matchName: string): string {
   return normalizeSearch(matchName);
+}
+
+/**
+ * Eski kayıtları taşırken maç kimliği: maç adından türetilir. Yeni seçimlerde kullanıcı maçı listeden seçerek aynı
+ * kimliği kullanır; yazım farkı tek başına güvenilir grup anahtarı sayılmaz.
+ */
+export function matchIdFromName(matchName: string): string {
+  return `m-${matchKey(matchName).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'mac'}`;
 }

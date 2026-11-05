@@ -1,27 +1,29 @@
 import type { CouponPart, MatchSelection, Plan, PlanInput } from '../types';
-import { calculateNormalCoupon, calculateSystemCoupon, type CalcResult } from './calculator';
+import { calculateNormalCoupon, calculateSystemCoupon, type CalcResult, type SystemRules } from './calculator';
 import { formatTL } from './money';
 import { describeSelection, validateSelection } from './validation';
 
 export type BuildResult = { ok: true; plan: Plan } | { ok: false; errors: string[] };
 
 /** Aynı kuponları aynı tutarlarla içeren planlar aynı imzayı alır (tekilleştirme için). */
-export function planSignature(input: PlanInput): string {
+export function planSignature(input: Pick<PlanInput, 'parts'>): string {
   return input.parts
     .map((p) =>
       p.kind === 'normal'
         ? `N:${[...p.selectionIds].sort().join('+')}:${p.stakeKurus}`
-        : `S${p.minSize}:${[...p.selectionIds].sort().join('+')}:${p.allocatedKurus}`,
+        : `S${[...p.sizes].sort((a, b) => a - b).join(',')}:${[...p.selectionIds].sort().join('+')}:${p.allocatedKurus}`,
     )
     .sort()
     .join('|');
 }
 
-/**
- * Plan girdisini (seçimler + tutarlar) doğrular ve hesaplanmış plana dönüştürür.
- * Bütçe kontrolü ayrılan tutarlar üzerinden yapılır; fiili harcama her zaman ayrılan tutardan küçük veya eşittir.
- */
-export function buildPlan(input: PlanInput, selections: readonly MatchSelection[], budgetKurus: number): BuildResult {
+/** Plan girdisini (seçimler + tutarlar) doğrular ve hesaplanmış plana dönüştürür. Toplam tutar bütçeyi aşamaz. */
+export function buildPlan(
+  input: PlanInput,
+  selections: readonly MatchSelection[],
+  budgetKurus: number,
+  rules: SystemRules = {},
+): BuildResult {
   if (!Number.isInteger(budgetKurus) || budgetKurus <= 0) return { ok: false, errors: ["Bütçe 0'dan büyük olmalı."] };
   if (input.parts.length === 0) return { ok: false, errors: ['Plan en az bir kupon içermeli.'] };
 
@@ -39,7 +41,7 @@ export function buildPlan(input: PlanInput, selections: readonly MatchSelection[
     for (const id of part.selectionIds) {
       const s = byId.get(id);
       if (!s) {
-        errors.push('Plandaki bir seçim artık listede yok; planları yeniden hesaplayın.');
+        errors.push('Plandaki bir seçim artık listede yok; analizi yeniden çalıştırın.');
         continue;
       }
       const selErrors = validateSelection(s);
@@ -54,7 +56,7 @@ export function buildPlan(input: PlanInput, selections: readonly MatchSelection[
       result = calculateNormalCoupon(partSelections, part.stakeKurus);
     } else {
       allocatedTotal += part.allocatedKurus;
-      result = calculateSystemCoupon(partSelections, part.minSize, part.allocatedKurus);
+      result = calculateSystemCoupon(partSelections, part.sizes, part.allocatedKurus, rules);
     }
     if (result.ok) parts.push(result.value);
     else errors.push(result.error);
@@ -67,8 +69,6 @@ export function buildPlan(input: PlanInput, selections: readonly MatchSelection[
 
   const totalStakeKurus = parts.reduce((sum, p) => sum + p.stakeKurus, 0);
   const selectionIds = Array.from(new Set(parts.flatMap((p) => p.selectionIds)));
-  const used = selectionIds.map((id) => byId.get(id)!);
-  const confidences = used.map((s) => s.confidence);
   const hasNormal = parts.some((p) => p.kind === 'normal');
   const hasSystem = parts.some((p) => p.kind === 'system');
 
@@ -76,7 +76,6 @@ export function buildPlan(input: PlanInput, selections: readonly MatchSelection[
     ok: true,
     plan: {
       id: planSignature(input),
-      strategy: input.strategy,
       label: input.label,
       description: input.description,
       input,
@@ -88,8 +87,6 @@ export function buildPlan(input: PlanInput, selections: readonly MatchSelection[
       selectionIds,
       selectionCount: selectionIds.length,
       columnCount: parts.reduce((sum, p) => sum + (p.kind === 'normal' ? 1 : p.columns.length), 0),
-      avgConfidence: confidences.reduce((a, b) => a + b, 0) / confidences.length,
-      minConfidence: Math.min(...confidences),
     },
   };
 }

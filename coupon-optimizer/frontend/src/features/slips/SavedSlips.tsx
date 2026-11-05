@@ -32,7 +32,7 @@ export function SavedSlips({ slips, selections, onDelete }: Props) {
       [...slips]
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
         .map((slip) => {
-          const built = buildPlan({ strategy: 'recommended', label: 'Kayıtlı kupon', description: '', parts: slip.parts }, slip.selections, slip.budgetKurus);
+          const built = buildPlan({ label: 'Kayıtlı kupon', description: '', parts: slip.parts }, slip.selections, slip.budgetKurus);
           if (!built.ok) return { slip, plan: null, settlement: null, error: built.errors.join(' ') };
           const oddsById = new Map(slip.selections.map((s) => [s.id, s.odds]));
           return { slip, plan: built.plan, settlement: settlePlan(built.plan, oddsById, results) };

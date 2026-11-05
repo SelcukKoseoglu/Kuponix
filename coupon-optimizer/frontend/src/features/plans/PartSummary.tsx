@@ -1,6 +1,6 @@
 import type { CouponPart, SelectionSnapshot, SystemCoupon } from '../../types';
 import { formatOdds, formatTL } from '../../lib/money';
-import { ConfidenceBadge } from '../selections/SelectionList';
+import { ConfidenceBadge } from '../../components/ConfidenceBadge';
 
 type Props = {
   part: CouponPart;

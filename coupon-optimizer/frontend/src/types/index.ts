@@ -3,20 +3,53 @@ export type SelectionResult = 'pending' | 'won' | 'lost' | 'void';
 
 export type MatchSelection = {
   id: string;
+  /** Aynı maça ait seçimleri gruplayan ortak kimlik. */
+  matchId: string;
   matchName: string; // "BJK - CRY"
   marketSelection: string; // "İlk Yarı 0"
   odds: number; // > 1, en fazla 2 ondalık
   minMatches: number; // pozitif tam sayı
-  confidence: number; // 1..10, öznel kullanıcı girdisi
+  /** Kullanıcının tahminine ne kadar güvendiği (1..10). Olasılık DEĞİLDİR. */
+  confidence: number;
+  /** Kullanıcının tahmini kazanma olasılığı (0..1). Girilmemişse EV/Edge/Kelly hesaplanmaz. */
+  estimatedProbability?: number;
+  /** İsteğe bağlı: farklı maçları ilişkili saymak için kullanıcı tanımlı korelasyon grubu. */
+  correlationGroup?: string;
   note?: string;
   /** Yoksa "bekliyor" kabul edilir (eski kayıtlarla uyumlu). */
   result?: SelectionResult;
 };
 
-/** Kayıtlı kupondaki seçimin, kuponun oynandığı andaki hali (oran sonradan değişse de hesap bozulmaz). */
-export type SelectionSnapshot = Pick<MatchSelection, 'id' | 'matchName' | 'marketSelection' | 'odds' | 'minMatches' | 'confidence'>;
+/** Aynı maçtaki iki seçimin birlikte gerçekleşme olasılığı (kullanıcı tanımlı ortak olasılık). */
+export type JointProbability = { selectionIds: [string, string]; probability: number };
 
+/** Kayıtlı kupondaki seçimin, kuponun oynandığı andaki hali (oran sonradan değişse de hesap bozulmaz). */
+export type SelectionSnapshot = Pick<MatchSelection, 'id' | 'matchId' | 'matchName' | 'marketSelection' | 'odds' | 'minMatches' | 'confidence'>;
+
+/** Strateji: Kontrollü, Dengeli, Agresif. */
 export type RiskProfile = 'cautious' | 'balanced' | 'aggressive';
+
+/** Analiz ayarları. null = sınır yok / strateji varsayılanı. Tutarlar kuruş. */
+export type AnalysisSettings = {
+  allowNormal: boolean;
+  allowSystem: boolean;
+  /** En fazla kayıp (en kötü senaryoda kaybedilebilecek tutar). */
+  maxLossKurus: number | null;
+  /** Tek seçim yatarsa etkilenecek tutarın bütçeye oranı üst sınırı (%). null → strateji varsayılanı. */
+  maxSelectionExposurePct: number | null;
+  /** Tek maç yatarsa etkilenecek tutarın bütçeye oranı üst sınırı (%). null → strateji varsayılanı. */
+  maxMatchExposurePct: number | null;
+  /** Platformun kolon başı alt/üst sınırı (kullanıcı girer; varsayılan yok). */
+  minColumnStakeKurus: number | null;
+  maxColumnStakeKurus: number | null;
+  /** Sistem kuponu toplam tutarı alt sınırı. */
+  minSystemStakeKurus: number;
+  /** Monte Carlo simülasyon sayısı ve tohum (aynı girdi + aynı tohum = aynı sonuç). */
+  simulationCount: number;
+  seed: number;
+  /** Öne çıkarılacak strateji (isteğe bağlı). */
+  preferredStrategy: RiskProfile | null;
+};
 
 export type NormalCoupon = {
   kind: 'normal';
@@ -32,6 +65,8 @@ export type SystemColumn = {
   selectionIds: string[];
   size: number;
   combinedOdds: number;
+  /** Bu kolona düşen tutar (kalan kuruşlar ilk kolonlara deterministik dağıtılır). */
+  stakeKurus: number;
   /** Bu kolon kazanırsa teorik brüt dönüşü. */
   returnKurus: number;
 };
@@ -55,31 +90,27 @@ export type SystemCoupon = {
   kind: 'system';
   selectionIds: string[];
   selectionCount: number;
-  minSize: number;
+  /** Kolon boyutları, ör. [3, 4] → "Sistem 3,4". */
+  sizes: number[];
   label: string;
   /** Formatın teorik kolon sayısı (min. maç kuralı uygulanmadan). */
   totalColumns: number;
   columns: SystemColumn[];
   excludedColumns: ExcludedColumn[];
-  allocatedKurus: number;
+  /** Kolon başı taban tutar (bazı kolonlar 1 kuruş fazla alabilir). */
   perColumnKurus: number;
-  /** Fiilen oynanan tutar = kolon başına tutar × geçerli kolon sayısı. */
+  /** Toplam sistem tutarı = kolon tutarlarının toplamı. */
   stakeKurus: number;
-  /** Kuruş yuvarlamasından dolayı kullanılmayan ayrılmış tutar. */
-  unallocatedKurus: number;
   scenarios: LossScenario[];
 };
 
 export type CouponPart = NormalCoupon | SystemCoupon;
 
-export type Strategy = 'recommended' | 'all-in-normal' | 'all-in-system';
-
 export type PartInput =
   | { kind: 'normal'; selectionIds: string[]; stakeKurus: number }
-  | { kind: 'system'; selectionIds: string[]; minSize: number; allocatedKurus: number };
+  | { kind: 'system'; selectionIds: string[]; sizes: number[]; allocatedKurus: number };
 
 export type PlanInput = {
-  strategy: Strategy;
   label: string;
   description: string;
   parts: PartInput[];
@@ -87,7 +118,6 @@ export type PlanInput = {
 
 export type Plan = {
   id: string;
-  strategy: Strategy;
   label: string;
   description: string;
   input: PlanInput;
@@ -99,38 +129,7 @@ export type Plan = {
   selectionIds: string[];
   selectionCount: number;
   columnCount: number;
-  avgConfidence: number;
-  minConfidence: number;
   edited?: boolean;
-};
-
-/** Güven puanlarının öznel olasılık sayıldığı varsayım altında plan istatistikleri. */
-export type PlanStats = {
-  stakeKurus: number;
-  expectedReturnKurus: number;
-  expectedProfitKurus: number;
-  stdDevKurus: number;
-  /** Hiç dönüş alamama olasılığı. */
-  probNoReturn: number;
-  /** Dönüşün yatırılan tutarı geçme olasılığı. */
-  probProfit: number;
-  maxReturnKurus: number;
-  /** Optimizasyon hedefi: beklenen dönüş − λ × standart sapma. */
-  score: number;
-};
-
-export type Comparison = { label: string; plan: Plan; stats: PlanStats };
-
-export type OptimizationResult = {
-  plan: Plan | null;
-  stats: PlanStats | null;
-  comparisons: Comparison[];
-  riskProfile: RiskProfile;
-  notes: string[];
-  budgetKurus: number;
-  validSelectionCount: number;
-  usedPoolSize: number;
-  pruned: boolean;
 };
 
 export type SavedSlip = {

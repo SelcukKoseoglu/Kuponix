@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { buildPlan } from '../plan';
-import { evaluatePlan, summarizeDistribution } from '../probability';
 import { settlePlan } from '../settlement';
 import type { PartInput, SelectionResult } from '../../types';
 import { sel, TL } from './fixtures';
@@ -9,7 +8,7 @@ const selections = [sel('a', 2), sel('b', 2), sel('c', 2), sel('d', 2)];
 const oddsById = new Map(selections.map((s) => [s.id, s.odds]));
 
 function plan(parts: PartInput[], budget = TL(300)) {
-  const r = buildPlan({ strategy: 'recommended', label: 'T', description: '', parts }, selections, budget);
+  const r = buildPlan({ label: 'T', description: '', parts }, selections, budget);
   if (!r.ok) throw new Error(r.errors.join(' '));
   return r.plan;
 }
@@ -47,7 +46,7 @@ describe('kupon sonuçlandırma', () => {
 
   it('sistem kuponunda yalnızca kazanan kolonların dönüşü toplanır', () => {
     // Sistem 3,4: 5 kolon × 20 TL. d yatarsa yalnızca a+b+c kolonu kazanır: 20 × 8 = 160 TL.
-    const sys = plan([{ kind: 'system', selectionIds: ['a', 'b', 'c', 'd'], minSize: 3, allocatedKurus: TL(100) }]);
+    const sys = plan([{ kind: 'system', selectionIds: ['a', 'b', 'c', 'd'], sizes: [3, 4], allocatedKurus: TL(100) }]);
     const s = settlePlan(sys, oddsById, results({ a: 'won', b: 'won', c: 'won', d: 'lost' }));
     expect(s.parts[0].wonColumns).toBe(1);
     expect(s.parts[0].lostColumns).toBe(4);
@@ -64,28 +63,5 @@ describe('kupon sonuçlandırma', () => {
     expect(s.stakeKurus).toBe(TL(200));
     expect(s.settledReturnKurus).toBe(TL(400));
     expect(s.profitKurus).toBe(TL(200));
-  });
-});
-
-describe('öznel olasılık modeli', () => {
-  it('beklenen dönüşü ve hiç dönüş alamama ihtimalini hesaplar', () => {
-    // 2 maç, %70 ve %80, toplam ödeme 400: beklenen = 400 × 0,56 = 224
-    const d = summarizeDistribution([0.7, 0.8], [{ mask: 0b11, amount: 400 }]);
-    expect(d.mean).toBeCloseTo(224, 9);
-    expect(d.probNoReturn).toBeCloseTo(0.44, 9);
-  });
-
-  it('plan istatistiklerini güven puanlarından çıkarır', () => {
-    const p = buildPlan(
-      { strategy: 'recommended', label: 'T', description: '', parts: [{ kind: 'normal', selectionIds: ['x', 'y'], stakeKurus: TL(100) }] },
-      [sel('x', 2, 7), sel('y', 2, 8)],
-      TL(100),
-    );
-    expect(p.ok).toBe(true);
-    if (!p.ok) return;
-    const stats = evaluatePlan(p.plan, [sel('x', 2, 7), sel('y', 2, 8)], 'balanced');
-    expect(stats.expectedReturnKurus).toBe(TL(224));
-    expect(stats.expectedProfitKurus).toBe(TL(124));
-    expect(stats.probProfit).toBeCloseTo(0.56, 9);
   });
 });

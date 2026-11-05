@@ -4,14 +4,31 @@ import { Autocomplete, type AutocompleteOption } from '../../components/Autocomp
 import { MARKETS, QUICK_MARKETS, quickPick } from '../../data/markets';
 import { TEAMS } from '../../data/teams';
 import { normalizeSearch, searchItems } from '../../lib/search';
-import { EMPTY_DRAFT, splitMatchName, validateDraft, type DraftErrors, type SelectionDraft } from '../../lib/validation';
+import { formatPct, formatReturn } from '../../lib/format';
+import { parseDecimalInput } from '../../lib/money';
+import {
+  EMPTY_DRAFT,
+  parsePercentInput,
+  splitMatchName,
+  validateDraft,
+  type DraftErrors,
+  type SelectionDraft,
+} from '../../lib/validation';
+
+export type MatchOption = { matchId: string; matchName: string; count: number };
 
 type Props = {
   editing: MatchSelection | null;
   /** Daha önce girilmiş takım adları (listede olmasalar da aramada çıkar). */
   knownTeams: string[];
-  onSubmit: (value: Omit<MatchSelection, 'id'>) => void;
+  /** Listede kayıtlı maçlar: aynı maça seçim eklemek için. */
+  matches: MatchOption[];
+  /** "Bu maça seçim ekle" ile seçilen maç. */
+  presetMatchId: string | null;
+  /** matchId: mevcut maç; null: yeni maç. */
+  onSubmit: (value: Omit<MatchSelection, 'id' | 'matchId'>, matchId: string | null) => void;
   onCancelEdit: () => void;
+  onClearPreset: () => void;
 };
 
 const TEAM_ITEMS = TEAMS.map((t) => ({ value: t.name, aliases: t.aliases, hint: t.league }));
@@ -21,19 +38,29 @@ const POPULAR_MARKETS = MARKET_ITEMS.filter((m) => MARKETS.find((x) => x.value =
 function toDraft(s: MatchSelection): SelectionDraft {
   const { home, away } = splitMatchName(s.matchName);
   return {
+    matchId: s.matchId,
     homeTeam: home,
     awayTeam: away,
     marketSelection: s.marketSelection,
     odds: String(s.odds).replace('.', ','),
     minMatches: String(s.minMatches),
     confidence: String(s.confidence),
+    estimatedProbability:
+      s.estimatedProbability !== undefined ? String(Math.round(s.estimatedProbability * 10000) / 100).replace('.', ',') : '',
+    correlationGroup: s.correlationGroup ?? '',
     note: s.note ?? '',
   };
 }
 
+function draftForMatch(match: MatchOption | undefined, base: SelectionDraft): SelectionDraft {
+  if (!match) return { ...base, matchId: '' };
+  const { home, away } = splitMatchName(match.matchName);
+  return { ...base, matchId: match.matchId, homeTeam: home, awayTeam: away };
+}
+
 const toOption = (item: { value: string; hint?: string }): AutocompleteOption => ({ value: item.value, hint: item.hint });
 
-export function SelectionForm({ editing, knownTeams, onSubmit, onCancelEdit }: Props) {
+export function SelectionForm({ editing, knownTeams, matches, presetMatchId, onSubmit, onCancelEdit, onClearPreset }: Props) {
   const [draft, setDraft] = useState<SelectionDraft>(EMPTY_DRAFT);
   const [errors, setErrors] = useState<DraftErrors>({});
   const [combine, setCombine] = useState(false);
@@ -45,6 +72,22 @@ export function SelectionForm({ editing, knownTeams, onSubmit, onCancelEdit }: P
     setErrors({});
     if (editing) firstInput.current?.focus();
   }, [editing]);
+
+  useEffect(() => {
+    if (!presetMatchId || editing) return;
+    setDraft((d) => draftForMatch(matches.find((m) => m.matchId === presetMatchId), d));
+    setErrors({});
+    marketInput.current?.focus();
+    onClearPreset();
+  }, [presetMatchId, editing, matches, onClearPreset]);
+
+  const linkedMatch = matches.find((m) => m.matchId === draft.matchId);
+  const odds = parseDecimalInput(draft.odds);
+  const probability = parsePercentInput(draft.estimatedProbability);
+  const preview =
+    odds && odds > 1
+      ? { implied: 1 / odds, ev: typeof probability === 'number' && probability > 0 && probability < 1 ? probability * odds - 1 : null }
+      : null;
 
   const teamItems = useMemo(() => {
     const listed = new Set(TEAM_ITEMS.flatMap((t) => [t.value, ...(t.aliases ?? [])]).map(normalizeSearch));
@@ -83,11 +126,11 @@ export function SelectionForm({ editing, knownTeams, onSubmit, onCancelEdit }: P
       setErrors(result.errors);
       return;
     }
-    onSubmit(result.value);
+    onSubmit(result.value, draft.matchId || null);
     if (!editing) {
-      // Hızlı giriş: min. maç ve güven değerleri bir sonraki seçim için korunur.
-      setDraft((d) => ({ ...EMPTY_DRAFT, minMatches: d.minMatches, confidence: d.confidence }));
-      firstInput.current?.focus();
+      // Hızlı giriş: aynı maç, min. maç ve güven değerleri bir sonraki seçim için korunur.
+      setDraft((d) => ({ ...EMPTY_DRAFT, matchId: d.matchId, homeTeam: d.homeTeam, awayTeam: d.awayTeam, minMatches: d.minMatches, confidence: d.confidence }));
+      (draft.matchId ? marketInput : firstInput).current?.focus();
     }
   };
 
@@ -102,7 +145,33 @@ export function SelectionForm({ editing, knownTeams, onSubmit, onCancelEdit }: P
         )}
       </div>
 
-      <div className="grid items-start gap-3 sm:grid-cols-[1fr_auto_1fr]">
+      {matches.length > 0 && (
+        <div className="block min-w-0">
+          <label htmlFor="match-picker" className="label">
+            Maç
+          </label>
+          <select
+            id="match-picker"
+            className="input"
+            value={draft.matchId}
+            onChange={(e) => setDraft((d) => draftForMatch(matches.find((m) => m.matchId === e.target.value), { ...d, homeTeam: e.target.value ? d.homeTeam : '', awayTeam: e.target.value ? d.awayTeam : '' }))}
+          >
+            <option value="">Yeni maç</option>
+            {matches.map((m) => (
+              <option key={m.matchId} value={m.matchId}>
+                {m.matchName} ({m.count} seçim)
+              </option>
+            ))}
+          </select>
+          {linkedMatch && (
+            <p className="mt-1 text-xs text-sky-300">
+              Bu seçim “{linkedMatch.matchName}” maçına eklenecek; aynı maçtaki seçimler birbirinden bağımsız sayılmaz.
+            </p>
+          )}
+        </div>
+      )}
+
+      <fieldset disabled={!!linkedMatch} className="grid items-start gap-3 disabled:opacity-60 sm:grid-cols-[1fr_auto_1fr]">
         <Field label="Ev sahibi" error={errors.homeTeam}>
           <Autocomplete
             ref={firstInput}
@@ -133,7 +202,7 @@ export function SelectionForm({ editing, knownTeams, onSubmit, onCancelEdit }: P
             invalid={!!errors.awayTeam}
           />
         </Field>
-      </div>
+      </fieldset>
 
       <Field label="Bahis seçimi" error={errors.marketSelection}>
         <Autocomplete
@@ -177,7 +246,7 @@ export function SelectionForm({ editing, knownTeams, onSubmit, onCancelEdit }: P
         </label>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Field label="Oran" error={errors.odds}>
           <input
             inputMode="decimal"
@@ -186,6 +255,17 @@ export function SelectionForm({ editing, knownTeams, onSubmit, onCancelEdit }: P
             value={draft.odds}
             onChange={(e) => set('odds')(e.target.value)}
             placeholder="2,15"
+          />
+        </Field>
+        <Field label="Tahmini olasılık (%)" error={errors.estimatedProbability}>
+          <input
+            inputMode="decimal"
+            aria-label="Tahmini olasılık yüzde"
+            aria-describedby="probability-help"
+            className={`input ${errors.estimatedProbability ? 'input-error' : ''}`}
+            value={draft.estimatedProbability}
+            onChange={(e) => set('estimatedProbability')(e.target.value)}
+            placeholder="ör. 55"
           />
         </Field>
         <Field label="Min. maç" error={errors.minMatches}>
@@ -208,11 +288,51 @@ export function SelectionForm({ editing, knownTeams, onSubmit, onCancelEdit }: P
           />
         </Field>
       </div>
-      <p id="min-matches-help" className="-mt-1 text-xs leading-relaxed text-slate-400">
-        <strong className="text-slate-300">Min. maç:</strong> Bu seçim yalnızca en az bu sayıda seçim içeren bir
-        kuponda/kolonda kullanılabilir. Örneğin 2 girilirse tekli oynanamaz; sistem kuponunda bu koşula uymayan kolonlar
-        plandan çıkarılır. <strong className="text-slate-300">Güven:</strong> 7 girersen “%70 tutar” diye düşündüğün kabul edilir.
-      </p>
+      {preview && (
+        <p className="-mt-1 text-xs tabular-nums text-slate-400" aria-live="polite">
+          Oranın ima ettiği olasılık: <b className="text-slate-200">{formatPct(preview.implied, 2)}</b>
+          {preview.ev !== null && (
+            <>
+              {' '}
+              · Tahminine göre EV: <b className="text-slate-200">{formatReturn(preview.ev)}</b>{' '}
+              <span className="text-slate-500">(tahmine bağlıdır)</span>
+            </>
+          )}
+        </p>
+      )}
+      <div id="probability-help" className="-mt-1 space-y-1 text-xs leading-relaxed text-slate-400">
+        <p>
+          <strong className="text-slate-300">Tahmini olasılık:</strong> Seçimin gerçekleşme ihtimaline dair senin sayısal tahminin.
+          Girilmezse EV, Kelly ve olasılık tabanlı analiz bu seçim için hesaplanmaz.
+        </p>
+        <p>
+          <strong className="text-slate-300">Güven:</strong> Bu tahmine ne kadar güvendiğin. Olasılık değildir; yalnızca stres
+          senaryolarındaki belirsizlik aralığını belirler (düşük güven → daha geniş aralık).
+        </p>
+        <p id="min-matches-help">
+          <strong className="text-slate-300">Min. maç:</strong> Bu seçim yalnızca en az bu sayıda seçim içeren bir kuponda/kolonda
+          kullanılabilir. Örneğin 2 girilirse tekli oynanamaz; sistem kuponunda bu koşula uymayan kolonlar plandan çıkarılır.
+        </p>
+      </div>
+
+      <details className="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2">
+        <summary className="cursor-pointer select-none text-sm font-medium text-slate-300">Gelişmiş: korelasyon grubu</summary>
+        <div className="mt-2">
+          <Field label="Korelasyon grubu (isteğe bağlı)" error={errors.correlationGroup}>
+            <input
+              aria-label="Korelasyon grubu"
+              className={`input ${errors.correlationGroup ? 'input-error' : ''}`}
+              value={draft.correlationGroup}
+              onChange={(e) => set('correlationGroup')(e.target.value)}
+              placeholder="ör. Süper Lig yağmurlu maçlar"
+            />
+          </Field>
+          <p className="mt-1 text-xs text-slate-400">
+            Farklı maçları ortak bir etken nedeniyle ilişkili sayıyorsan aynı grup adını yaz. Aynı gruptaki seçimler aynı kupona
+            konmaz; Kontrollü strateji ve stres metrikleri onları birlikte kaybedecekmiş gibi değerlendirir.
+          </p>
+        </div>
+      </details>
 
       <Field label="Not (isteğe bağlı)" error={errors.note}>
         <input

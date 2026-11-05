@@ -46,7 +46,7 @@ export function settlePlan(plan: Plan, oddsById: Map<string, number>, results: M
     const legs: Leg[] =
       part.kind === 'normal'
         ? [{ ids: part.selectionIds, stakeKurus: part.stakeKurus }]
-        : part.columns.map((c) => ({ ids: c.selectionIds, stakeKurus: part.perColumnKurus }));
+        : part.columns.map((c) => ({ ids: c.selectionIds, stakeKurus: c.stakeKurus }));
     let settled = 0;
     let potential = 0;
     let won = 0;
